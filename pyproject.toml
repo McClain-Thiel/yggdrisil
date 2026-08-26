@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yggdrisil"
+version = "0.1.0"
+description = "A persistent DAG-search runtime with interchangeable policies."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Yggdrisil contributors" }]
+keywords = ["search", "dag", "agents", "scientific-computing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = [
+    "networkx>=3.2",
+]
+
+[project.optional-dependencies]
+agents = [
+    "pydantic>=2.0",
+    "pydantic-ai>=0.0.14",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+]
+
+[project.urls]
+Homepage = "https://github.com/mcclainthiel/yggdrisil"
+Documentation = "https://mcclainthiel.github.io/yggdrisil/"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+yggdrisil = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src", ".", "examples"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
