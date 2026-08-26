@@ -75,6 +75,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         max_requests: int = 4,
         lineage_depth: int = 8,
         recent: int = 12,
+        max_frontier: int = 100,
     ) -> None:
         self.navigator = navigator
         self.explorer = explorer
@@ -82,6 +83,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         self.max_requests = max_requests
         self.lineage_depth = lineage_depth
         self.recent = recent
+        self.max_frontier = max_frontier
 
     async def step(
         self,
@@ -92,9 +94,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         requests = plan.requests[: self.max_requests]
         if not requests:
             return []
-        contexts = [
-            self._explorer_context(graph, request) for request in requests
-        ]
+        contexts = [self._explorer_context(graph, request) for request in requests]
         results = await asyncio.gather(
             *[self.explorer.explore(ctx) for ctx in contexts]
         )
@@ -120,10 +120,9 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         graph: ReadOnlyStateGraph[State, Action],
         status: RunStatus,
     ) -> NavigatorContext:
-        states = graph.states()
-        recent_nodes = list(reversed(states))[: self.recent]
+        recent_nodes = graph.states(limit=self.recent, newest=True)
         summaries: dict[str, str] = {}
-        for node in states:
+        for node in recent_nodes:
             note = node.metadata.get("note") or node.metadata.get("agent_note")
             if isinstance(note, str) and note:
                 summaries[node.state_id] = note
@@ -132,7 +131,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
             status=status,
             unique_states=len(graph),
             edges=graph.edge_count(),
-            frontier_ids=[n.state_id for n in graph.frontier()],
+            frontier_ids=[n.state_id for n in graph.frontier(limit=self.max_frontier)],
             recent=[
                 {
                     "state_id": n.state_id,

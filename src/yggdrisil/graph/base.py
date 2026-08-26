@@ -23,9 +23,14 @@ class ReadOnlyStateGraph(Protocol[State, Action]):
 
     def descendants(self, state_id: str) -> list[StateNode[State]]: ...
 
-    def frontier(self) -> list[StateNode[State]]: ...
+    def frontier(self, limit: int | None = None) -> list[StateNode[State]]: ...
 
-    def states(self) -> list[StateNode[State]]: ...
+    def states(
+        self,
+        limit: int | None = None,
+        *,
+        newest: bool = False,
+    ) -> list[StateNode[State]]: ...
 
     def edges(self) -> list[Edge[Action]]: ...
 
@@ -75,10 +80,15 @@ class StateGraph(ABC, Generic[State, Action]):
     def descendants(self, state_id: str) -> list[StateNode[State]]: ...
 
     @abstractmethod
-    def frontier(self) -> list[StateNode[State]]: ...
+    def frontier(self, limit: int | None = None) -> list[StateNode[State]]: ...
 
     @abstractmethod
-    def states(self) -> list[StateNode[State]]: ...
+    def states(
+        self,
+        limit: int | None = None,
+        *,
+        newest: bool = False,
+    ) -> list[StateNode[State]]: ...
 
     @abstractmethod
     def edges(self) -> list[Edge[Action]]: ...
@@ -92,7 +102,7 @@ class StateGraph(ABC, Generic[State, Action]):
     def readonly(self) -> ReadOnlyStateGraph[State, Action]:
         return ReadOnlyGraph(self)
 
-    def to_networkx(self):
+    def to_networkx(self) -> Any:
         from yggdrisil.graph.export import to_networkx
 
         return to_networkx(self)
@@ -109,9 +119,15 @@ class StateGraph(ABC, Generic[State, Action]):
 
 
 class ReadOnlyGraph(Generic[State, Action]):
-    """Explicit read-only view: mutators are simply not present."""
+    """Read-only policy interface for trusted Python code.
+
+    Mutators are not exposed through the public API. This is an interface
+    boundary, not a sandbox for hostile policy implementations.
+    """
 
     __slots__ = ("_graph",)
+
+    _graph: StateGraph[State, Action]
 
     def __init__(self, graph: StateGraph[State, Action]) -> None:
         object.__setattr__(self, "_graph", graph)
@@ -134,11 +150,16 @@ class ReadOnlyGraph(Generic[State, Action]):
     def descendants(self, state_id: str) -> list[StateNode[State]]:
         return self._graph.descendants(state_id)
 
-    def frontier(self) -> list[StateNode[State]]:
-        return self._graph.frontier()
+    def frontier(self, limit: int | None = None) -> list[StateNode[State]]:
+        return self._graph.frontier(limit=limit)
 
-    def states(self) -> list[StateNode[State]]:
-        return self._graph.states()
+    def states(
+        self,
+        limit: int | None = None,
+        *,
+        newest: bool = False,
+    ) -> list[StateNode[State]]:
+        return self._graph.states(limit=limit, newest=newest)
 
     def edges(self) -> list[Edge[Action]]:
         return self._graph.edges()

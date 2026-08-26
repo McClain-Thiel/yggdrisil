@@ -25,3 +25,18 @@ async def test_cached_tool_reuses_results(tmp_path: Path) -> None:
     assert await double("s2", 3) == 6
     assert calls["n"] == 3
     cache.close()
+
+
+@pytest.mark.asyncio
+async def test_cached_tool_can_cache_none(tmp_path: Path) -> None:
+    cache = ToolCache(tmp_path / "tools.sqlite")
+    calls = {"n": 0}
+
+    @cached_tool(cache, name="missing", version="1")
+    async def missing(state_id: str) -> None:
+        calls["n"] += 1
+
+    assert await missing("s1") is None
+    assert await missing("s1") is None
+    assert calls["n"] == 1
+    cache.close()

@@ -8,10 +8,10 @@ from yggdrisil.graph.base import ReadOnlyStateGraph
 from yggdrisil.serialize import dumps
 
 
-def to_networkx(graph: ReadOnlyStateGraph):
+def to_networkx(graph: ReadOnlyStateGraph[Any, Any]) -> Any:
     import networkx as nx
 
-    g = nx.DiGraph()
+    g: Any = nx.MultiDiGraph()
     for node in graph.states():
         g.add_node(
             node.state_id,
@@ -33,13 +33,16 @@ def to_networkx(graph: ReadOnlyStateGraph):
     return g
 
 
-def export_json(graph: ReadOnlyStateGraph, path: str | Path) -> None:
+def export_json(
+    graph: ReadOnlyStateGraph[Any, Any],
+    path: str | Path,
+) -> None:
     payload: dict[str, Any] = {
         "states": [
             {
                 "state_id": n.state_id,
                 "state": json.loads(dumps(n.state)),
-                "metadata": n.metadata,
+                "metadata": json.loads(dumps(n.metadata)),
                 "created_at": n.created_at,
                 "created_step": n.created_step,
             }
@@ -51,7 +54,7 @@ def export_json(graph: ReadOnlyStateGraph, path: str | Path) -> None:
                 "parent_id": e.parent_id,
                 "child_id": e.child_id,
                 "action": json.loads(dumps(e.action)),
-                "metadata": e.metadata,
+                "metadata": json.loads(dumps(e.metadata)),
                 "created_at": e.created_at,
                 "created_step": e.created_step,
             }
@@ -61,14 +64,17 @@ def export_json(graph: ReadOnlyStateGraph, path: str | Path) -> None:
     Path(path).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-def export_graphml(graph: ReadOnlyStateGraph, path: str | Path) -> None:
+def export_graphml(
+    graph: ReadOnlyStateGraph[Any, Any],
+    path: str | Path,
+) -> None:
     import networkx as nx
 
     g = to_networkx(graph)
     for _, data in g.nodes(data=True):
         data["state"] = dumps(data.get("state"))
         data["metadata"] = dumps(data.get("metadata") or {})
-    for _, _, data in g.edges(data=True):
+    for _, _, _, data in g.edges(keys=True, data=True):
         data["action"] = dumps(data.get("action"))
         data["metadata"] = dumps(data.get("metadata") or {})
     nx.write_graphml(g, path)

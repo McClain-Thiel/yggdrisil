@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from make24 import Combine, Make24
+
 from yggdrisil.graph import SQLiteStateGraph
 
 

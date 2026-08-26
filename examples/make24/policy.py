@@ -5,13 +5,6 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from yggdrisil.agents import (
-    ExplorationRequest,
-    ExplorerResult,
-    NavigationPlan,
-    NavigatorExplorerPolicy,
-)
-
 from make24.problem import (
     DEFAULT_TARGET,
     Combine,
@@ -24,6 +17,12 @@ from make24.tools import (
     ArithmeticTools,
     bind_kit,
     reset_kit,
+)
+from yggdrisil.agents import (
+    ExplorationRequest,
+    ExplorerResult,
+    NavigationPlan,
+    NavigatorExplorerPolicy,
 )
 
 GOAL = "Make 24. Use every number in the pool; order of operations can vary."
@@ -85,6 +84,7 @@ class TinyMake24LM:
             first = picks[0]
             note = f"{first.left} {first.op} {first.right}"
         return ExplorerResult(actions=picks, note=note, trace=kit.trace)
+
     # --8<-- [end:explore]
 
     def _rank_first_moves(

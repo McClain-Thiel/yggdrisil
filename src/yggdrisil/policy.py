@@ -21,6 +21,6 @@ class Policy(Protocol[Action]):
 
     async def step(
         self,
-        graph: ReadOnlyStateGraph,
+        graph: ReadOnlyStateGraph[Any, Action],
         status: RunStatus,
     ) -> list[Proposal[Action]]: ...

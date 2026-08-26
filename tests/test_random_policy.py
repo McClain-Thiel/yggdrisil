@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from make24 import Make24
+
 from yggdrisil.graph import SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
 from yggdrisil.policies import RandomPolicy

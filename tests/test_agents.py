@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from make24 import Combine, Make24, tiny_policy
 
 from yggdrisil.agents import (
     ExplorationRequest,
@@ -10,7 +11,6 @@ from yggdrisil.agents import (
     NavigationPlan,
     NavigatorExplorerPolicy,
 )
-from make24 import Combine, Make24, tiny_policy
 from yggdrisil.graph import SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
 from yggdrisil.runner import Runner
@@ -23,9 +23,7 @@ class FixedNavigator:
     async def plan(self, context) -> NavigationPlan:
         return NavigationPlan(
             requests=[
-                ExplorationRequest(
-                    state_id=self.state_id, guidance="try addition"
-                )
+                ExplorationRequest(state_id=self.state_id, guidance="try addition")
             ]
         )
 
@@ -52,9 +50,7 @@ async def test_explorer_only_proposes_direct_children(tmp_path: Path) -> None:
     start_id = problem.state_key(problem.initial_state)
     graph.add_state(start_id, problem.initial_state)
     explorer = FixedExplorer([Combine("1", "3", "+"), Combine("4", "6", "*")])
-    policy = NavigatorExplorerPolicy(
-        FixedNavigator(start_id), explorer, goal="make 24"
-    )
+    policy = NavigatorExplorerPolicy(FixedNavigator(start_id), explorer, goal="make 24")
     status = RunStatus(
         step=0,
         unique_states=1,

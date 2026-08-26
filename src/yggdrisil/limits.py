@@ -9,6 +9,16 @@ class RunLimits:
     max_steps: int | None = None
     max_wall_time_s: float | None = None
 
+    def __post_init__(self) -> None:
+        if self.max_states is not None and self.max_states < 1:
+            raise ValueError("max_states must be positive")
+        for name, value in (
+            ("max_steps", self.max_steps),
+            ("max_wall_time_s", self.max_wall_time_s),
+        ):
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must be non-negative")
+
     def reached(
         self,
         *,

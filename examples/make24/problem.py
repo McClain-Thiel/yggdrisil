@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
-from yggdrisil.serialize import stable_hash
+from yggdrisil.serialize import serializable, stable_hash
 
 DEFAULT_NUMBERS = (1, 3, 4, 6)
 DEFAULT_TARGET = 24
@@ -53,6 +53,7 @@ def _sorted_values(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 # --8<-- [start:pool]
+@serializable
 @dataclass(frozen=True)
 class Pool:
     """Remaining numbers plus the explorer trace that produced this node.
@@ -71,10 +72,13 @@ class Pool:
     @classmethod
     def from_ints(cls, *numbers: int | str | Fraction) -> Pool:
         return cls(tuple(canon(n) for n in numbers))
+
+
 # --8<-- [end:pool]
 
 
 # --8<-- [start:combine]
+@serializable
 @dataclass(frozen=True)
 class Combine:
     """Replace `left` and `right` in the pool with `left op right`."""
@@ -90,6 +94,8 @@ class Combine:
         if op not in _OPS:
             raise ValueError(f"unknown op {self.op!r}")
         object.__setattr__(self, "op", op)
+
+
 # --8<-- [end:combine]
 
 
@@ -136,6 +142,7 @@ class Make24:
     # --8<-- [start:state_key]
     def state_key(self, state: Pool) -> str:
         return stable_hash({"values": state.values, "target": self.target})
+
     # --8<-- [end:state_key]
 
     def apply(self, state: Pool, action: Combine) -> Pool:
@@ -150,6 +157,7 @@ class Make24:
         """
         raw = metadata.get("trace") or ()
         return Pool(values=state.values, trace=tuple(raw))
+
     # --8<-- [end:decorate]
 
     def validate_state(self, state: Pool) -> None:

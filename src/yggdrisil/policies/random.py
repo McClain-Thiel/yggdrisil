@@ -20,7 +20,7 @@ class RandomPolicy(Generic[State, Action]):
 
     def __init__(
         self,
-        sample_actions: ActionSampler,
+        sample_actions: ActionSampler[State, Action],
         *,
         n_proposals: int = 1,
         seed: int | None = None,
@@ -46,7 +46,9 @@ class RandomPolicy(Generic[State, Action]):
             actions = list(self.sample_actions(parent.state, self._rng))
             if not actions:
                 continue
-            action = actions[0] if len(actions) == 1 else self._rng.choice(list(actions))
+            action = (
+                actions[0] if len(actions) == 1 else self._rng.choice(list(actions))
+            )
             proposals.append(Proposal(parent_id=parent.state_id, action=action))
         return proposals
 

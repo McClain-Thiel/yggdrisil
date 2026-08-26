@@ -6,8 +6,6 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import Any
 
-from yggdrisil.serialize import dumps
-
 from make24.problem import (
     DEFAULT_TARGET,
     Combine,
@@ -17,6 +15,7 @@ from make24.problem import (
     eval_op,
     pool_solved,
 )
+from yggdrisil.serialize import dumps
 
 
 # --8<-- [start:kit]
@@ -59,6 +58,8 @@ class ArithmeticTools:
             record["error"] = str(exc)
         self.trace.append(record)
         return dumps(record)
+
+
 # --8<-- [end:kit]
 
 

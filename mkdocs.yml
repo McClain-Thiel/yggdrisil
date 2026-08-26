@@ -1,8 +1,8 @@
 site_name: Yggdrisil
-site_description: A persistent DAG-search runtime with interchangeable policies.
-site_url: https://mcclainthiel.github.io/yggdrisil/
-repo_url: https://github.com/mcclainthiel/yggdrisil
-repo_name: mcclainthiel/yggdrisil
+site_description: A persistent DAG-search framework for agentic optimization.
+site_url: https://mcclain-thiel.github.io/yggdrisil/
+repo_url: https://github.com/McClain-Thiel/yggdrisil
+repo_name: McClain-Thiel/yggdrisil
 edit_uri: edit/main/docs/
 copyright: Yggdrisil is a search substrate, not an agent framework.
 
@@ -56,7 +56,7 @@ theme:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/mcclainthiel/yggdrisil
+      link: https://github.com/McClain-Thiel/yggdrisil
 
 extra_css:
   - stylesheets/extra.css

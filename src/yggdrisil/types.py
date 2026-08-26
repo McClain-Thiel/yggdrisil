@@ -50,3 +50,5 @@ class RunResult:
     edges: int
     elapsed_s: float
     limits: RunLimits
+    best_state_id: str | None = None
+    best_score: float | None = None

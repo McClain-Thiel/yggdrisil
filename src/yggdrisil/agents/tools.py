@@ -7,7 +7,9 @@ from yggdrisil.graph.base import ReadOnlyStateGraph
 from yggdrisil.serialize import dumps
 
 
-def bind_graph_tools(graph: ReadOnlyStateGraph) -> list[Callable[..., str]]:
+def bind_graph_tools(
+    graph: ReadOnlyStateGraph[Any, Any],
+) -> list[Callable[..., str]]:
     """Plain callables an agent library can register as tools."""
 
     def get_state(state_id: str) -> str:
@@ -41,5 +43,7 @@ def bind_graph_tools(graph: ReadOnlyStateGraph) -> list[Callable[..., str]]:
     return [get_state, list_frontier, list_children, list_parents, list_ancestors]
 
 
-def as_toolset(graph: ReadOnlyStateGraph) -> Sequence[Callable[..., str]]:
+def as_toolset(
+    graph: ReadOnlyStateGraph[Any, Any],
+) -> Sequence[Callable[..., str]]:
     return bind_graph_tools(graph)

@@ -4,22 +4,33 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from pathlib import Path
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(EXAMPLES))
 
-from yggdrisil import RandomPolicy, Runner, RunLimits, SQLiteStateGraph  # noqa: E402
 from make24.policy import llm_policy, tiny_policy  # noqa: E402
 from make24.problem import Make24, render_pool  # noqa: E402
+from yggdrisil import (  # noqa: E402
+    BestFirstPolicy,
+    Objective,
+    RandomPolicy,
+    RunLimits,
+    Runner,
+    SQLiteStateGraph,
+)
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--policy", choices=("random", "tiny", "llm"), default="tiny")
+    parser.add_argument(
+        "--policy",
+        choices=("random", "best-first", "tiny", "llm"),
+        default="tiny",
+    )
     parser.add_argument("--model", default="openai:gpt-4o-mini")
     parser.add_argument("--max-states", type=int, default=40)
     parser.add_argument("--seed", type=int, default=0)
@@ -29,6 +40,12 @@ async def main() -> None:
     problem = Make24()
     if args.policy == "random":
         policy = RandomPolicy(problem.sample_actions, n_proposals=2, seed=args.seed)
+    elif args.policy == "best-first":
+        policy = BestFirstPolicy(
+            lambda state, _rng: problem.legal_actions(state),
+            n_proposals=2,
+            seed=args.seed,
+        )
     elif args.policy == "tiny":
         policy = tiny_policy(seed=args.seed, problem=problem)
     else:
@@ -36,8 +53,16 @@ async def main() -> None:
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     graph = SQLiteStateGraph(args.out)
+    objective = Objective(
+        score=lambda state: -problem.distance(state) - len(state.values) + 1,
+        goal_reached=problem.solved,
+    )
     result = await Runner(
-        problem, policy, graph, RunLimits(max_states=args.max_states)
+        problem,
+        policy,
+        graph,
+        RunLimits(max_states=args.max_states),
+        objective=objective,
     ).run()
 
     hits = [n for n in graph.states() if problem.solved(n.state)]

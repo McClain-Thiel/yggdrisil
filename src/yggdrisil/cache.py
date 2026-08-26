@@ -52,12 +52,16 @@ class ToolCache:
         )
 
     def get(self, key: str) -> Any | None:
+        found, value = self.lookup(key)
+        return value if found else None
+
+    def lookup(self, key: str) -> tuple[bool, Any]:
         row = self._conn.execute(
             "SELECT value_json FROM tool_results WHERE cache_key = ?", (key,)
         ).fetchone()
         if row is None:
-            return None
-        return loads(row[0])
+            return False, None
+        return True, loads(row[0])
 
     def set(self, key: str, value: Any) -> None:
         self._conn.execute(
@@ -95,9 +99,9 @@ def cached_tool(
                 tool_version=version,
                 arguments={"args": extra_args, "kwargs": extra_kwargs},
             )
-            hit = cache.get(key)
-            if hit is not None:
-                return hit
+            found, value = cache.lookup(key)
+            if found:
+                return value
             result = fn(*args, **kwargs)
             if inspect.isawaitable(result):
                 result = await result

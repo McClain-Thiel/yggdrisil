@@ -14,6 +14,8 @@ Import runtime types from `yggdrisil`. Agent helpers live under
 
 ::: yggdrisil.runner.Runner
 
+::: yggdrisil.objective.Objective
+
 ::: yggdrisil.limits.RunLimits
 
 ::: yggdrisil.limits.RunStatus
@@ -28,6 +30,7 @@ Import runtime types from `yggdrisil`. Agent helpers live under
       members:
         - add_state
         - add_edge
+        - add_transition
         - get_state
         - parents
         - children
@@ -41,6 +44,7 @@ Import runtime types from `yggdrisil`. Agent helpers live under
         - export_json
         - export_graphml
         - save_run
+        - get_run
         - latest_run
         - close
 
@@ -53,6 +57,8 @@ Import runtime types from `yggdrisil`. Agent helpers live under
 ## Policies
 
 ::: yggdrisil.policies.random.RandomPolicy
+
+::: yggdrisil.policies.best_first.BestFirstPolicy
 
 ::: yggdrisil.agents.navigator_explorer.NavigatorExplorerPolicy
 
@@ -69,3 +75,5 @@ Import runtime types from `yggdrisil`. Agent helpers live under
 ::: yggdrisil.exceptions.UnknownStateError
 
 ::: yggdrisil.exceptions.CycleError
+
+::: yggdrisil.exceptions.SerializationError

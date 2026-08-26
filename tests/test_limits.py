@@ -1,15 +1,28 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 
 import pytest
-
 from make24 import Combine, Make24
+
+from tests.support import ScriptedPolicy
 from yggdrisil.graph import SQLiteStateGraph
 from yggdrisil.limits import RunLimits
 from yggdrisil.policy import Proposal
 from yggdrisil.runner import Runner
-from tests.support import ScriptedPolicy
+
+
+class SlowPolicy:
+    async def step(self, graph, status):
+        await asyncio.sleep(1)
+        return []
+
+
+class FailingPolicy:
+    async def step(self, graph, status):
+        raise TimeoutError("policy failed")
 
 
 @pytest.mark.asyncio
@@ -57,12 +70,54 @@ async def test_max_wall_time_stops(tmp_path: Path) -> None:
     graph = SQLiteStateGraph(tmp_path / "g.sqlite")
     result = await Runner(
         problem,
-        ScriptedPolicy(
-            [[Proposal(parent_id="unused", action=Combine("1", "3", "+"))]]
-        ),
+        ScriptedPolicy([[Proposal(parent_id="unused", action=Combine("1", "3", "+"))]]),
         graph,
         RunLimits(max_wall_time_s=0.0),
     ).run()
     assert result.stop_reason == "max_wall_time_s"
     assert result.unique_states == 1
     assert result.edges == 0
+
+
+@pytest.mark.asyncio
+async def test_max_wall_time_interrupts_policy_call(tmp_path: Path) -> None:
+    graph = SQLiteStateGraph(tmp_path / "g.sqlite")
+    started = time.monotonic()
+    result = await Runner(
+        Make24(),
+        SlowPolicy(),
+        graph,
+        RunLimits(max_wall_time_s=0.02),
+    ).run()
+    assert result.stop_reason == "max_wall_time_s"
+    assert time.monotonic() - started < 0.5
+
+
+@pytest.mark.asyncio
+async def test_policy_timeout_error_is_not_mistaken_for_limit(tmp_path: Path) -> None:
+    graph = SQLiteStateGraph(tmp_path / "g.sqlite")
+    with pytest.raises(TimeoutError, match="policy failed"):
+        await Runner(
+            Make24(),
+            FailingPolicy(),
+            graph,
+            RunLimits(max_wall_time_s=1),
+        ).run()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"max_states": -1},
+        {"max_steps": -1},
+        {"max_wall_time_s": -0.1},
+    ],
+)
+def test_negative_limits_are_rejected(kwargs: dict) -> None:
+    with pytest.raises(ValueError, match="positive|non-negative"):
+        RunLimits(**kwargs)
+
+
+def test_zero_max_states_is_rejected() -> None:
+    with pytest.raises(ValueError, match="max_states must be positive"):
+        RunLimits(max_states=0)

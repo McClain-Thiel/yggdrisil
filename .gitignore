@@ -6,6 +6,7 @@ dist/
 build/
 .venv/
 venv/
+uv.lock
 .env
 .pytest_cache/
 .ruff_cache/

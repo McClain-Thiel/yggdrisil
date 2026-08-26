@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from make24 import Combine, Make24
 
 from yggdrisil.exceptions import CycleError, UnknownStateError
-from make24 import Combine, Make24
 from yggdrisil.graph import SQLiteStateGraph
 
 
@@ -130,3 +130,18 @@ def test_frontier_are_leaves(tmp_path: Path) -> None:
     graph.add_state(child_id, child)
     graph.add_edge(start_id, child_id, Combine("1", "3", "+"))
     assert {n.state_id for n in graph.frontier()} == {child_id}
+
+
+def test_state_queries_can_be_bounded_and_ordered(tmp_path: Path) -> None:
+    graph = SQLiteStateGraph(tmp_path / "graph.sqlite")
+    problem = Make24()
+    states = [
+        problem.initial_state,
+        problem.apply(problem.initial_state, Combine("1", "3", "+")),
+        problem.apply(problem.initial_state, Combine("4", "6", "+")),
+    ]
+    for step, state in enumerate(states):
+        graph.add_state(problem.state_key(state), state, created_step=step)
+
+    assert [node.created_step for node in graph.states(limit=2)] == [0, 1]
+    assert [node.created_step for node in graph.states(limit=2, newest=True)] == [2, 1]

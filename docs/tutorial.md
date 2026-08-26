@@ -65,7 +65,7 @@ def apply(self, state: Pool, action: Combine) -> Pool:
 ## 3. Stamp the trace onto the child
 
 After `apply`, the runner calls optional
-[`Problem.decorate`][yggdrisil.problem.Problem.decorate] **before**
+an optional `Problem.decorate` method **before**
 computing `state_key`.
 
 ```mermaid
@@ -123,7 +123,7 @@ steps that can still reach 24.
 ```
 
 [`NavigatorExplorerPolicy`][yggdrisil.agents.navigator_explorer.NavigatorExplorerPolicy]
-is the only policy helper in Yggdrisil. The navigator and explorer
+is the agent policy helper in Yggdrisil. The navigator and explorer
 roles are yours:
 
 ```python
@@ -168,15 +168,26 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-Swap the policy without changing the problem:
+Swap the policy without changing the problem. `BestFirstPolicy` uses the
+scores written by an `Objective`; random search does not:
 
 ```python
-from yggdrisil import RandomPolicy
+from yggdrisil import BestFirstPolicy, RandomPolicy
 from policy import llm_policy
 
 RandomPolicy(problem.sample_actions, n_proposals=2, seed=0)
+BestFirstPolicy(problem.sample_actions, n_proposals=2, seed=0)
 llm_policy("openai:gpt-4o-mini")
 ```
+
+While the runner is active, open another terminal:
+
+```bash
+yggdrisil inspect runs/make24/graph.sqlite
+```
+
+The inspector follows new nodes and edges, and displays the tool trace stored
+on each selection.
 
 ## 7. Why this shape
 

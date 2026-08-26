@@ -29,7 +29,7 @@ multi-step paths. Each invocation is independent; there is no chat history.
 """
 
 
-def _require_pydantic_ai():
+def _require_pydantic_ai() -> Any:
     try:
         from pydantic_ai import Agent
     except ImportError as exc:
@@ -40,7 +40,9 @@ def _require_pydantic_ai():
 
 
 class PydanticAINavigator:
-    def __init__(self, agent: Any, *, prompt: Callable[[NavigatorContext], str] | None = None) -> None:
+    def __init__(
+        self, agent: Any, *, prompt: Callable[[NavigatorContext], str] | None = None
+    ) -> None:
         self.agent = agent
         self.prompt = prompt or format_navigator_prompt
 
@@ -58,7 +60,9 @@ class PydanticAINavigator:
             requests=[
                 req
                 if isinstance(req, ExplorationRequest)
-                else ExplorationRequest(state_id=req.state_id, guidance=getattr(req, "guidance", None))
+                else ExplorationRequest(
+                    state_id=req.state_id, guidance=getattr(req, "guidance", None)
+                )
                 for req in requests
             ]
         )
@@ -74,9 +78,7 @@ class PydanticAIExplorer(Generic[State, Action]):
         self.agent = agent
         self.prompt = prompt or format_explorer_prompt
 
-    async def explore(
-        self, context: ExplorerContext[State]
-    ) -> ExplorerResult[Action]:
+    async def explore(self, context: ExplorerContext[State]) -> ExplorerResult[Action]:
         result = await self.agent.run(self.prompt(context))
         output = result.output
         if isinstance(output, ExplorerResult):

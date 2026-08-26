@@ -1,5 +1,5 @@
-from make24.problem import Combine, Make24, Pool, apply_combine, render_pool
 from make24.policy import TinyMake24LM, llm_policy, tiny_policy
+from make24.problem import Combine, Make24, Pool, apply_combine, render_pool
 from make24.tools import ArithmeticTools
 
 __all__ = [

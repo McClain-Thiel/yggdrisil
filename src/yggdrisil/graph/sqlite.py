@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from collections import deque
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -46,11 +47,14 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS idx_edges_parent ON edges(parent_id);
 CREATE INDEX IF NOT EXISTS idx_edges_child ON edges(child_id);
+CREATE INDEX IF NOT EXISTS idx_states_created_step ON states(created_step);
+CREATE INDEX IF NOT EXISTS idx_edges_created_step ON edges(created_step);
+CREATE INDEX IF NOT EXISTS idx_runs_updated_at ON runs(updated_at);
 """
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
@@ -68,6 +72,9 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
             self.path = Path(":memory:")
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA busy_timeout = 5000")
+        if db_path != ":memory:":
+            self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
@@ -120,12 +127,10 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
         if not self.has_state(child_id):
             raise UnknownStateError(child_id)
         if parent_id == child_id or self._reaches(child_id, parent_id):
-            raise CycleError(
-                f"edge {parent_id} -> {child_id} would create a cycle"
-            )
+            raise CycleError(f"edge {parent_id} -> {child_id} would create a cycle")
         action_json = dumps(action)
         edge_id = stable_hash(
-            {"parent_id": parent_id, "child_id": child_id, "action": action_json}
+            {"parent_id": parent_id, "child_id": child_id, "action": action}
         )
         existing = self._conn.execute(
             "SELECT edge_id FROM edges WHERE edge_id = ?", (edge_id,)
@@ -153,6 +158,78 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
         self._conn.commit()
         return self._load_edge(edge_id)
 
+    def add_transition(
+        self,
+        *,
+        parent_id: str,
+        child_id: str,
+        child: State,
+        action: Action,
+        state_metadata: dict[str, Any] | None = None,
+        edge_metadata: dict[str, Any] | None = None,
+        created_step: int = 0,
+    ) -> tuple[StateNode[State], Edge[Action], bool]:
+        """Insert a child and its incoming edge in one transaction."""
+
+        if not self.has_state(parent_id):
+            raise UnknownStateError(parent_id)
+        if parent_id == child_id or self._reaches(child_id, parent_id):
+            raise CycleError(f"edge {parent_id} -> {child_id} would create a cycle")
+
+        child_json = dumps(child)
+        action_json = dumps(action)
+        state_meta_json = dumps(state_metadata or {})
+        edge_meta_json = dumps(edge_metadata or {})
+        edge_id = stable_hash(
+            {"parent_id": parent_id, "child_id": child_id, "action": action}
+        )
+        now = _utcnow()
+        state_created = not self.has_state(child_id)
+
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO states (
+                    state_id, state_json, metadata_json, created_at, created_step
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (child_id, child_json, state_meta_json, now, created_step),
+            )
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO edges (
+                    edge_id, parent_id, child_id, action_json,
+                    metadata_json, created_at, created_step
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    edge_id,
+                    parent_id,
+                    child_id,
+                    action_json,
+                    edge_meta_json,
+                    now,
+                    created_step,
+                ),
+            )
+
+        row = self._conn.execute(
+            """
+            SELECT edge_id FROM edges
+            WHERE parent_id = ? AND child_id = ? AND action_json = ?
+            """,
+            (parent_id, child_id, action_json),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("transition transaction did not create an edge")
+        return (
+            self.get_state(child_id),
+            self._load_edge(row["edge_id"]),
+            state_created,
+        )
+
     def get_state(self, state_id: str) -> StateNode[State]:
         row = self._conn.execute(
             "SELECT * FROM states WHERE state_id = ?", (state_id,)
@@ -166,6 +243,19 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
             "SELECT 1 FROM states WHERE state_id = ?", (state_id,)
         ).fetchone()
         return row is not None
+
+    def update_state_metadata(
+        self,
+        state_id: str,
+        metadata: dict[str, Any],
+    ) -> StateNode[State]:
+        self.get_state(state_id)
+        self._conn.execute(
+            "UPDATE states SET metadata_json = ? WHERE state_id = ?",
+            (dumps(metadata), state_id),
+        )
+        self._conn.commit()
+        return self.get_state(state_id)
 
     def parents(self, state_id: str) -> list[StateNode[State]]:
         self.get_state(state_id)
@@ -199,21 +289,36 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
     def descendants(self, state_id: str) -> list[StateNode[State]]:
         return self._walk(state_id, upward=False)
 
-    def frontier(self) -> list[StateNode[State]]:
-        rows = self._conn.execute(
-            """
+    def frontier(self, limit: int | None = None) -> list[StateNode[State]]:
+        sql = """
             SELECT s.* FROM states s
             LEFT JOIN edges e ON e.parent_id = s.state_id
             WHERE e.edge_id IS NULL
             ORDER BY s.state_id
-            """
-        ).fetchall()
+        """
+        parameters: tuple[int, ...] = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            parameters = (limit,)
+        rows = self._conn.execute(sql, parameters).fetchall()
         return [self._row_to_state(r) for r in rows]
 
-    def states(self) -> list[StateNode[State]]:
-        rows = self._conn.execute(
-            "SELECT * FROM states ORDER BY created_step, state_id"
-        ).fetchall()
+    def states(
+        self,
+        limit: int | None = None,
+        *,
+        newest: bool = False,
+    ) -> list[StateNode[State]]:
+        direction = "DESC" if newest else "ASC"
+        sql = (
+            "SELECT * FROM states "
+            f"ORDER BY created_step {direction}, state_id {direction}"
+        )
+        parameters: tuple[int, ...] = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            parameters = (limit,)
+        rows = self._conn.execute(sql, parameters).fetchall()
         return [self._row_to_state(r) for r in rows]
 
     def edges(self) -> list[Edge[Action]]:
@@ -288,7 +393,7 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
 
     def latest_run(self) -> RunRecord | None:
         row = self._conn.execute(
-            "SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1"
+            "SELECT run_id FROM runs ORDER BY updated_at DESC LIMIT 1"
         ).fetchone()
         if row is None:
             return None
@@ -326,18 +431,20 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
         return parents, children
 
     def _reaches(self, start: str, target: str) -> bool:
-        _, children = self._adjacency()
-        seen = {start}
-        stack = [start]
-        while stack:
-            node = stack.pop()
-            for nxt in children.get(node, []):
-                if nxt == target:
-                    return True
-                if nxt not in seen:
-                    seen.add(nxt)
-                    stack.append(nxt)
-        return False
+        row = self._conn.execute(
+            """
+            WITH RECURSIVE reachable(state_id) AS (
+                SELECT child_id FROM edges WHERE parent_id = ?
+                UNION
+                SELECT e.child_id
+                FROM edges e
+                JOIN reachable r ON e.parent_id = r.state_id
+            )
+            SELECT 1 FROM reachable WHERE state_id = ? LIMIT 1
+            """,
+            (start, target),
+        ).fetchone()
+        return row is not None
 
     def _walk(self, state_id: str, *, upward: bool) -> list[StateNode[State]]:
         self.get_state(state_id)
@@ -345,9 +452,9 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
         links = parents if upward else children
         ordered: list[str] = []
         seen = {state_id}
-        queue = [state_id]
+        queue = deque([state_id])
         while queue:
-            node = queue.pop(0)
+            node = queue.popleft()
             nxts = sorted(links.get(node, []))
             for nxt in nxts:
                 if nxt not in seen:

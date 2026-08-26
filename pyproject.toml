@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "yggdrisil"
 version = "0.1.0"
-description = "A persistent DAG-search runtime with interchangeable policies."
+description = "A persistent DAG-search framework for agentic optimization."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
-authors = [{ name = "Yggdrisil contributors" }]
-keywords = ["search", "dag", "agents", "scientific-computing"]
+license = "MIT"
+authors = [{ name = "McClain Thiel" }]
+keywords = ["search", "tree-search", "dag", "agents", "optimization"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -25,12 +25,16 @@ dependencies = [
 
 [project.optional-dependencies]
 agents = [
-    "pydantic>=2.0",
-    "pydantic-ai>=0.0.14",
+    "pydantic>=2.10",
+    "pydantic-ai>=2.0,<3",
 ]
 dev = [
+    "build>=1.2",
+    "mypy>=1.13",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "ruff>=0.9",
+    "types-networkx>=3.2",
 ]
 docs = [
     "mkdocs-material>=9.5",
@@ -38,14 +42,18 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mcclainthiel/yggdrisil"
-Documentation = "https://mcclainthiel.github.io/yggdrisil/"
+Homepage = "https://github.com/McClain-Thiel/yggdrisil"
+Documentation = "https://mcclain-thiel.github.io/yggdrisil/"
+Issues = "https://github.com/McClain-Thiel/yggdrisil/issues"
+
+[project.scripts]
+yggdrisil = "yggdrisil.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-yggdrisil = ["py.typed"]
+yggdrisil = ["py.typed", "web/*.css", "web/*.html", "web/*.js"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -55,3 +63,12 @@ pythonpath = ["src", ".", "examples"]
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/yggdrisil"]
+strict = true
+warn_unreachable = true
