@@ -113,6 +113,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
                         for request in requests
                     ]
                 },
+                tool_calls=list(getattr(self.navigator, "last_trace", ()) or ()),
             )
         ]
         if not requests:

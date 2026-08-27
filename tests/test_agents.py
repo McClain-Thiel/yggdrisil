@@ -11,6 +11,7 @@ from yggdrisil.agents import (
     NavigationPlan,
     NavigatorExplorerPolicy,
 )
+from yggdrisil.agents.pydantic_ai import _trace_from_run
 from yggdrisil.graph import SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
 from yggdrisil.runner import Runner
@@ -50,7 +51,9 @@ async def test_explorer_only_proposes_direct_children(tmp_path: Path) -> None:
     start_id = problem.state_key(problem.initial_state)
     graph.add_state(start_id, problem.initial_state)
     explorer = FixedExplorer([Combine("1", "3", "+"), Combine("4", "6", "*")])
-    policy = NavigatorExplorerPolicy(FixedNavigator(start_id), explorer, goal="make 24")
+    navigator = FixedNavigator(start_id)
+    navigator.last_trace = [{"role": "usage", "input_tokens": 12}]
+    policy = NavigatorExplorerPolicy(navigator, explorer, goal="make 24")
     status = RunStatus(
         step=0,
         unique_states=1,
@@ -60,6 +63,7 @@ async def test_explorer_only_proposes_direct_children(tmp_path: Path) -> None:
     )
     decisions = await policy.step(graph.readonly(), status)
     assert [decision.role for decision in decisions] == ["navigator", "explorer"]
+    assert decisions[0].tool_calls == [{"role": "usage", "input_tokens": 12}]
     proposals = decisions[1].proposals
     assert {proposal.parent_id for proposal in proposals} == {start_id}
     assert [proposal.action for proposal in proposals] == [
@@ -68,6 +72,37 @@ async def test_explorer_only_proposes_direct_children(tmp_path: Path) -> None:
     ]
     assert explorer.calls == 1
     assert decisions[1].tool_calls[0]["tool"] == "add"
+
+
+def test_pydantic_ai_trace_includes_usage_without_messages() -> None:
+    class Usage:
+        requests = 2
+        tool_calls = 3
+        input_tokens = 120
+        output_tokens = 40
+        cache_read_tokens = 10
+        cache_write_tokens = 5
+        cost = 0.0012
+
+    class Result:
+        def all_messages(self):
+            return []
+
+        def usage(self):
+            return Usage()
+
+    assert _trace_from_run(Result()) == [
+        {
+            "role": "usage",
+            "requests": 2,
+            "tool_calls": 3,
+            "input_tokens": 120,
+            "output_tokens": 40,
+            "cache_read_tokens": 10,
+            "cache_write_tokens": 5,
+            "cost_usd": "0.0012",
+        }
+    ]
 
 
 @pytest.mark.asyncio
