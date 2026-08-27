@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
+from yggdrisil.evaluation import EvaluatorSuite
 from yggdrisil.exceptions import GraphError, SerializationError
 from yggdrisil.graph.sqlite import SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
@@ -25,7 +26,7 @@ def _utcnow_id() -> str:
 
 
 class Runner(Generic[State, Action]):
-    """Persist policy decisions and materialize their proposed transitions."""
+    """Evaluate states, persist decisions, and materialize proposed transitions."""
 
     def __init__(
         self,
@@ -35,6 +36,7 @@ class Runner(Generic[State, Action]):
         limits: RunLimits,
         *,
         objective: Objective[State] | None = None,
+        evaluators: EvaluatorSuite[State] | None = None,
         run_id: str | None = None,
         resume: bool = True,
         metadata: dict[str, Any] | None = None,
@@ -44,6 +46,7 @@ class Runner(Generic[State, Action]):
         self.graph = graph
         self.limits = limits
         self.objective = objective
+        self.evaluators = evaluators
         self.metadata = metadata or {}
         self.resume = resume
         self._requested_run_id = run_id
@@ -65,9 +68,13 @@ class Runner(Generic[State, Action]):
         stop_reason = "completed"
 
         try:
-            if restored is not None:
-                recovered_stop = self._recover_uncheckpointed_step(
-                    goal_found=goal_found
+            evaluations_complete = await self._evaluate_existing_states(started)
+            if not evaluations_complete:
+                stop_reason = "max_wall_time_s"
+            if restored is not None and stop_reason == "completed":
+                recovered_stop = await self._recover_uncheckpointed_step(
+                    goal_found=goal_found,
+                    started=started,
                 )
                 if recovered_stop is not None:
                     stop_reason = recovered_stop
@@ -126,6 +133,25 @@ class Runner(Generic[State, Action]):
                         child_id=child_id,
                         edge_id=edge_id,
                     )
+                    try:
+                        evaluations_complete = await self._evaluate_state(
+                            child_id,
+                            started,
+                        )
+                    except Exception:
+                        self._skip_events(
+                            proposal_events[index + 1 :],
+                            "skipped_failure",
+                        )
+                        raise
+                    if not evaluations_complete:
+                        stop_reason = "max_wall_time_s"
+                        self._skip_events(
+                            proposal_events[index + 1 :],
+                            "skipped_max_wall_time_s",
+                        )
+                        stopped = True
+                        break
                     if goal:
                         stop_reason = "objective"
                         self._skip_events(
@@ -324,7 +350,12 @@ class Runner(Generic[State, Action]):
                     recorded.append((proposal, event_id))
         return recorded
 
-    def _recover_uncheckpointed_step(self, *, goal_found: bool) -> str | None:
+    async def _recover_uncheckpointed_step(
+        self,
+        *,
+        goal_found: bool,
+        started: float,
+    ) -> str | None:
         events = [
             event
             for event in self.graph.proposal_events(run_id=self.run_id)
@@ -422,6 +453,28 @@ class Runner(Generic[State, Action]):
                 edge_id=edge_id,
             )
             materialized = True
+            try:
+                evaluations_complete = await self._evaluate_state(
+                    child_id,
+                    started,
+                )
+            except Exception:
+                for remaining in events[index + 1 :]:
+                    if remaining.outcome == "pending":
+                        self.graph.finish_proposal_event(
+                            remaining.event_id,
+                            outcome="skipped_failure",
+                        )
+                raise
+            if not evaluations_complete:
+                stop_reason = "max_wall_time_s"
+                for remaining in events[index + 1 :]:
+                    if remaining.outcome == "pending":
+                        self.graph.finish_proposal_event(
+                            remaining.event_id,
+                            outcome="skipped_max_wall_time_s",
+                        )
+                break
             if goal:
                 stop_reason = "objective"
                 for remaining in events[index + 1 :]:
@@ -435,6 +488,33 @@ class Runner(Generic[State, Action]):
         self._step = created_step
         self._persist("running")
         return stop_reason
+
+    async def _evaluate_existing_states(self, started: float) -> bool:
+        if self.evaluators is None:
+            return True
+        for node in self.graph.states():
+            if not await self._evaluate_state(node.state_id, started):
+                return False
+        return True
+
+    async def _evaluate_state(self, state_id: str, started: float) -> bool:
+        if self.evaluators is None:
+            return True
+        remaining = self._remaining_wall_time(time.monotonic() - started)
+        if remaining is None:
+            await self.evaluators.evaluate_cached(self.graph, state_id)
+            return True
+        if remaining <= 0:
+            return False
+        timeout = asyncio.timeout(remaining)
+        try:
+            async with timeout:
+                await self.evaluators.evaluate_cached(self.graph, state_id)
+        except TimeoutError:
+            if timeout.expired():
+                return False
+            raise
+        return True
 
     def _skip_events(
         self,

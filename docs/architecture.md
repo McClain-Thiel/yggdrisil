@@ -10,6 +10,7 @@ flowchart LR
   Policy -->|"list[Decision]"| Runner
   Graph -->|"read-only states + evidence"| Policy
   Evaluator -->|"EvaluationResult"| Graph
+  Runner -->|"optional scheduling"| Evaluator
   Runner -->|"states + edges"| Graph
   Runner -->|"decisions + proposal events"| Graph
   Limits --> Runner
@@ -44,10 +45,16 @@ state_id + evaluator name + evaluator version + evaluator config
 ```
 
 [`EvaluatorSuite`][yggdrisil.evaluation.EvaluatorSuite] is deliberately thin:
-an ordered list evaluated sequentially. `evaluate_cached` avoids recomputing
-the same evaluator identity for the same state. Scheduling, parallelism, and
-aggregation remain application concerns until there is a concrete need for
-more machinery.
+an ordered list evaluated sequentially by default. `concurrent=True` starts
+independent evaluators together while preserving their declared result order.
+`evaluate_cached` avoids recomputing the same evaluator identity for the same
+state.
+
+Evaluation may be explicit, or a suite may be passed to the runner. A runner
+evaluates the initial and restored graph before the first policy call, then
+evaluates each materialized state before the next call. On resume it backfills
+records for evaluator identities that were added or changed. This keeps policy
+access read-only without hiding evidence production inside a policy.
 
 ## Policy and decision
 
@@ -116,22 +123,26 @@ provenance. The hot DAG remains states and edges.
 empty proposal batch stops it:
 
 1. Seed the initial state.
-2. Ask the policy for decisions.
-3. Persist each decision and its pending proposal events.
-4. Validate and apply proposals.
-5. Insert or reuse the canonical state and edge, then finalize each event.
-6. Persist run status after every step.
+2. Run and cache the optional evaluator suite.
+3. Ask the policy for decisions.
+4. Persist each decision and its pending proposal events.
+5. Validate and apply proposals.
+6. Finalize transition provenance, then evaluate the inserted or reused state.
+7. Persist run status after every step.
 
 Errors fail loudly. A rejected proposal is marked `failed`, later proposals in
 that batch are marked `skipped_failure`, the run is persisted as failed, and
-the original exception is raised.
+the original exception is raised. An evaluator failure leaves a valid
+transition marked `created` or `reused`; resume backfills its missing evidence
+before continuing.
 
 SQLite is the source of truth for resume. Each graph/provenance write commits
 independently, while `RunRecord.step` is the completed-batch checkpoint. On
 reopen, the runner reconciles proposal events one step ahead of that checkpoint
-before calling the policy: pending events are replayed against the idempotent
-DAG, and already-finalized events advance the saved step. Failed attempts are
-not mistaken for completed work and may be retried as new decisions.
+before calling the policy: missing evaluations are backfilled, pending events
+are replayed against the idempotent DAG, and already-finalized events advance
+the saved step. Failed attempts are not mistaken for completed work and may be
+retried as new decisions.
 
 The runner persists graph and run state, not arbitrary Python policy objects.
 Policies should reconstruct context from the read-only graph and `RunStatus`.
