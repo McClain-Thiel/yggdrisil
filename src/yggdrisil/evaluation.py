@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, Generic, Protocol, TypeVar
 
@@ -8,6 +10,7 @@ from yggdrisil.types import EvaluationRecord, MetricValue, StateNode
 
 State = TypeVar("State")
 EvaluatedState = TypeVar("EvaluatedState", contravariant=True)
+ConcurrentResult = TypeVar("ConcurrentResult")
 
 
 @dataclass(frozen=True)
@@ -48,12 +51,22 @@ class EvaluationStore(Protocol[State]):
 
 
 class EvaluatorSuite(Generic[State]):
-    """Evaluate a state with an ordered list of independent evaluators."""
+    """Evaluate an ordered list, optionally starting independent work together."""
 
-    def __init__(self, evaluators: list[Evaluator[State]]) -> None:
+    def __init__(
+        self,
+        evaluators: list[Evaluator[State]],
+        *,
+        concurrent: bool = False,
+    ) -> None:
         self.evaluators = tuple(evaluators)
+        self.concurrent = concurrent
 
     async def evaluate(self, state: State) -> list[EvaluationResult]:
+        if self.concurrent:
+            return await _gather_cancel_on_error(
+                *(evaluator.evaluate(state) for evaluator in self.evaluators)
+            )
         return [await evaluator.evaluate(state) for evaluator in self.evaluators]
 
     async def evaluate_cached(
@@ -61,6 +74,21 @@ class EvaluatorSuite(Generic[State]):
         store: EvaluationStore[State],
         state_id: str,
     ) -> list[EvaluationRecord]:
+        if self.concurrent:
+            ordered_ids: list[str] = []
+            unique: dict[str, Evaluator[State]] = {}
+            for evaluator in self.evaluators:
+                evaluator_id, _ = evaluator_identity(evaluator)
+                ordered_ids.append(evaluator_id)
+                unique.setdefault(evaluator_id, evaluator)
+            computed = await _gather_cancel_on_error(
+                *(
+                    evaluate_cached(store, state_id, evaluator)
+                    for evaluator in unique.values()
+                )
+            )
+            by_id = dict(zip(unique, computed, strict=True))
+            return [by_id[evaluator_id] for evaluator_id in ordered_ids]
         records: list[EvaluationRecord] = []
         for evaluator in self.evaluators:
             records.append(await evaluate_cached(store, state_id, evaluator))
@@ -105,3 +133,16 @@ def evaluator_identity(evaluator: Evaluator[Any]) -> tuple[str, str]:
         }
     )
     return evaluator_id, config_hash
+
+
+async def _gather_cancel_on_error(
+    *awaitables: Awaitable[ConcurrentResult],
+) -> list[ConcurrentResult]:
+    tasks = [asyncio.ensure_future(awaitable) for awaitable in awaitables]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise

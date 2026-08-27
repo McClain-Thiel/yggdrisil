@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from make24 import Combine, Make24
+from make24 import Combine, Make24, Pool
 
 from tests.support import ScriptedPolicy
+from yggdrisil.evaluation import EvaluationResult, EvaluatorSuite
 from yggdrisil.exceptions import GraphError, SerializationError, UnknownStateError
 from yggdrisil.graph import SQLiteStateGraph
 from yggdrisil.limits import RunLimits
@@ -23,6 +26,168 @@ class SimulatedCrash(BaseException):
 class MustNotRun:
     async def step(self, graph, status):
         raise AssertionError("policy should not run while recovering a saved step")
+
+
+@dataclass
+class PoolSizeEvaluator:
+    calls: list[tuple[str, ...]]
+    version: str = "1"
+    fail_once_at_size: int | None = None
+    name: str = "pool_size"
+
+    @property
+    def config(self) -> dict[str, int]:
+        return {}
+
+    async def evaluate(self, state: Pool) -> EvaluationResult:
+        self.calls.append(state.values)
+        if self.fail_once_at_size == len(state.values):
+            self.fail_once_at_size = None
+            raise RuntimeError("simulated evaluator failure")
+        return EvaluationResult(metrics={"pool_size": len(state.values)})
+
+
+class EvaluationAwarePolicy:
+    def __init__(self, proposal: Proposal[Combine]) -> None:
+        self.proposal = proposal
+        self.calls = 0
+
+    async def step(self, graph, status):
+        for node in graph.states():
+            assert graph.evaluations(node.state_id)
+        self.calls += 1
+        if self.calls == 1:
+            return [Decision(role="test", proposals=[self.proposal])]
+        return []
+
+
+@pytest.mark.asyncio
+async def test_runner_evaluates_states_before_policy_calls(tmp_path: Path) -> None:
+    problem = Make24()
+    graph = SQLiteStateGraph(tmp_path / "g.sqlite")
+    start_id = problem.state_key(problem.initial_state)
+    evaluator = PoolSizeEvaluator([])
+    policy = EvaluationAwarePolicy(
+        Proposal(parent_id=start_id, action=Combine("1", "3", "+"))
+    )
+
+    result = await Runner(
+        problem,
+        policy,
+        graph,
+        RunLimits(max_steps=2),
+        evaluators=EvaluatorSuite([evaluator]),
+    ).run()
+
+    assert result.stop_reason == "no_proposals"
+    assert policy.calls == 2
+    assert sorted(len(values) for values in evaluator.calls) == [3, 4]
+    assert all(graph.evaluations(node.state_id) for node in graph.states())
+
+
+@pytest.mark.asyncio
+async def test_runner_resume_backfills_new_evaluator_identity(tmp_path: Path) -> None:
+    problem = Make24()
+    path = tmp_path / "g.sqlite"
+    graph = SQLiteStateGraph(path)
+    first = PoolSizeEvaluator([], version="1")
+    await Runner(
+        problem,
+        MustNotRun(),
+        graph,
+        RunLimits(max_steps=0),
+        evaluators=EvaluatorSuite([first]),
+        run_id="run_a",
+    ).run()
+    graph.close()
+
+    graph = SQLiteStateGraph(path)
+    second = PoolSizeEvaluator([], version="2")
+    await Runner(
+        problem,
+        MustNotRun(),
+        graph,
+        RunLimits(max_steps=0),
+        evaluators=EvaluatorSuite([second]),
+        run_id="run_a",
+    ).run()
+
+    state_id = problem.state_key(problem.initial_state)
+    assert first.calls == [problem.initial_state.values]
+    assert second.calls == [problem.initial_state.values]
+    assert len(graph.evaluations(state_id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_runner_resume_backfills_evaluation_after_failure(
+    tmp_path: Path,
+) -> None:
+    problem = Make24()
+    path = tmp_path / "g.sqlite"
+    graph = SQLiteStateGraph(path)
+    start_id = problem.state_key(problem.initial_state)
+    failing = PoolSizeEvaluator([], fail_once_at_size=3)
+
+    with pytest.raises(RuntimeError, match="simulated evaluator failure"):
+        await Runner(
+            problem,
+            ScriptedPolicy(
+                [[Proposal(parent_id=start_id, action=Combine("1", "3", "+"))]]
+            ),
+            graph,
+            RunLimits(max_steps=1),
+            evaluators=EvaluatorSuite([failing]),
+            run_id="run_a",
+        ).run()
+    assert len(graph) == 2
+    failed_run_event = graph.proposal_events(run_id="run_a")[0]
+    assert failed_run_event.outcome == "created"
+    assert failed_run_event.child_id is not None
+    assert failed_run_event.edge_id is not None
+    graph.close()
+
+    graph = SQLiteStateGraph(path)
+    resumed = PoolSizeEvaluator([])
+    result = await Runner(
+        problem,
+        ScriptedPolicy([]),
+        graph,
+        RunLimits(max_steps=0),
+        evaluators=EvaluatorSuite([resumed]),
+        run_id="run_a",
+    ).run()
+
+    child = next(node for node in graph.states() if len(node.state.values) == 3)
+    assert result.stop_reason == "max_steps"
+    assert result.step == 1
+    assert resumed.calls == [child.state.values]
+    assert graph.evaluations(child.state_id)
+
+
+@pytest.mark.asyncio
+async def test_runner_wall_time_covers_evaluation(tmp_path: Path) -> None:
+    problem = Make24()
+    graph = SQLiteStateGraph(tmp_path / "g.sqlite")
+
+    class SlowEvaluator:
+        name = "slow"
+        version = "1"
+        config = None
+
+        async def evaluate(self, state: Pool) -> EvaluationResult:
+            await asyncio.sleep(1)
+            return EvaluationResult(metrics={})
+
+    result = await Runner(
+        problem,
+        MustNotRun(),
+        graph,
+        RunLimits(max_wall_time_s=0.01),
+        evaluators=EvaluatorSuite([SlowEvaluator()]),
+    ).run()
+
+    assert result.stop_reason == "max_wall_time_s"
+    assert not graph.evaluations(problem.state_key(problem.initial_state))
 
 
 @pytest.mark.asyncio

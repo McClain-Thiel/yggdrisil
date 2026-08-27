@@ -97,9 +97,8 @@ class State:
 
 ## Evaluations
 
-An evaluator returns metrics plus optional structured metadata. A suite is only
-an ordered list; evaluation remains explicit rather than being hidden inside
-the runner.
+An evaluator returns metrics plus optional structured metadata. A suite keeps
+the evaluators in a stable order and runs them sequentially by default.
 
 ```python
 from yggdrisil import EvaluationResult, EvaluatorSuite
@@ -118,6 +117,24 @@ records = await EvaluatorSuite([Distance()]).evaluate_cached(graph, state_id)
 print(records[0].metrics["distance"])
 ```
 
+For search-time evidence, pass the suite to the runner. Every state is evaluated
+before a policy can observe it. Restarts reuse cached records and backfill a new
+evaluator version or configuration across restored states:
+
+```python
+suite = EvaluatorSuite([Distance()], concurrent=True)
+result = await Runner(
+    problem,
+    policy,
+    graph,
+    RunLimits(max_states=40),
+    evaluators=suite,
+).run()
+```
+
+Use `concurrent=True` only when evaluators are independent. Results retain the
+suite's declared order. Evaluation time is covered by `max_wall_time_s`.
+
 The cache key is `(state_id, evaluator name, version, config)`. Change a version
 or configuration to produce a distinct evaluation record.
 
@@ -129,9 +146,10 @@ file per problem configuration; the runner fingerprints the problem and
 rejects a mismatch before mutation.
 
 The SQLite database is the resume checkpoint. States, edges, decisions, and
-proposal events are committed as they are written; the run step and metadata
-are checkpointed after every completed proposal batch. On reopen, the runner
-first reconciles an interrupted batch:
+proposal events are committed as they are written; evaluation records are
+cached independently. The run step and metadata are checkpointed after every
+completed proposal batch. On reopen, the runner first backfills configured
+evaluations and then reconciles an interrupted batch:
 
 - a pending proposal is applied again safely against the deduplicated DAG
 - proposal order and edge metadata are preserved during replay

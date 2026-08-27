@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -68,3 +69,92 @@ async def test_evaluator_identity_includes_version_and_config(tmp_path: Path) ->
 
     assert len({record.evaluator_id for record in records}) == 3
     assert len(graph.evaluations("state")) == 3
+
+
+@pytest.mark.asyncio
+async def test_evaluator_suite_can_run_concurrently_and_preserve_order(
+    tmp_path: Path,
+) -> None:
+    graph = SQLiteStateGraph[str, str](tmp_path / "graph.sqlite")
+    graph.add_state("state", "state")
+    started: list[str] = []
+    both_started = asyncio.Event()
+
+    @dataclass
+    class CoordinatedEvaluator:
+        name: str
+        version: str = "1"
+        config: dict[str, int] = field(default_factory=dict)
+
+        async def evaluate(self, state: str) -> EvaluationResult:
+            started.append(self.name)
+            if len(started) == 2:
+                both_started.set()
+            await asyncio.wait_for(both_started.wait(), timeout=0.1)
+            return EvaluationResult(metrics={"length": len(state)})
+
+    suite = EvaluatorSuite(
+        [CoordinatedEvaluator("first"), CoordinatedEvaluator("second")],
+        concurrent=True,
+    )
+
+    records = await suite.evaluate_cached(graph, "state")
+
+    assert started == ["first", "second"]
+    assert [record.evaluator for record in records] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_suite_cancels_siblings_after_failure() -> None:
+    peer_started = asyncio.Event()
+    peer_cancelled = asyncio.Event()
+
+    class FailingEvaluator:
+        name = "failing"
+        version = "1"
+        config = None
+
+        async def evaluate(self, state: str) -> EvaluationResult:
+            await peer_started.wait()
+            raise RuntimeError("failed")
+
+    class WaitingEvaluator:
+        name = "waiting"
+        version = "1"
+        config = None
+
+        async def evaluate(self, state: str) -> EvaluationResult:
+            peer_started.set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                peer_cancelled.set()
+                raise
+            return EvaluationResult(metrics={})
+
+    suite = EvaluatorSuite(
+        [FailingEvaluator(), WaitingEvaluator()],
+        concurrent=True,
+    )
+
+    with pytest.raises(RuntimeError, match="failed"):
+        await suite.evaluate("state")
+
+    assert peer_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cached_suite_coalesces_duplicate_identity(
+    tmp_path: Path,
+) -> None:
+    graph = SQLiteStateGraph[str, str](tmp_path / "graph.sqlite")
+    graph.add_state("state", "state")
+    calls: list[str] = []
+    evaluator = RecordingEvaluator("same", "1", {"offset": 0}, calls)
+    suite = EvaluatorSuite([evaluator, evaluator], concurrent=True)
+
+    records = await suite.evaluate_cached(graph, "state")
+
+    assert calls == ["same"]
+    assert len(records) == 2
+    assert records[0].evaluation_id == records[1].evaluation_id

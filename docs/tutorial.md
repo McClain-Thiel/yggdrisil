@@ -161,7 +161,8 @@ outcomes.
 
 ## 7. Add evaluation or another policy
 
-Evaluation is explicit and independent of policy provenance:
+Evaluation is independent of policy provenance. Run it explicitly for a single
+state:
 
 ```python
 from yggdrisil import EvaluationResult, EvaluatorSuite
@@ -178,6 +179,22 @@ class Distance:
 
 await EvaluatorSuite([Distance()]).evaluate_cached(graph, state_id)
 ```
+
+Or pass the suite to `Runner` so the initial, restored, and newly materialized
+states have cached evidence before the policy observes them:
+
+```python
+suite = EvaluatorSuite([Distance()])
+result = await Runner(
+    problem,
+    policy,
+    graph,
+    RunLimits(max_states=40),
+    evaluators=suite,
+).run()
+```
+
+Independent evaluators can use `EvaluatorSuite([...], concurrent=True)`.
 
 Best-first policy receives the stored evaluation records alongside each node.
 It can use them or rank directly from state:

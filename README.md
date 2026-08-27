@@ -49,7 +49,9 @@ interruption, and never overwrites an existing run when `resume=False`.
    reused, skipped, or failed.
 5. **Evaluation is evidence.** Evaluators return named scalar metrics.
    `EvaluatorSuite` is an ordered list of evaluators with per-state caching by
-   evaluator name, version, and configuration.
+   evaluator name, version, and configuration. Pass a suite to `Runner` to
+   evaluate every state before policies observe it; opt-in concurrent execution
+   is available for independent evaluators.
 6. **Objectives are run logic.** An optional scalar `Objective` tracks the best
    state and can stop a run without writing scores into state metadata.
 7. **Policies are replaceable.** Random search, best-first expansion, and
