@@ -34,6 +34,8 @@ see [Build a search](tutorial.md).
 
 ::: yggdrisil.evaluation.evaluate_cached
 
+::: yggdrisil.evaluation.evaluator_identity
+
 ::: yggdrisil.types.EvaluationRecord
 
 ## Graph and provenance

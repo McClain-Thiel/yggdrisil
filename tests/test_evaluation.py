@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from yggdrisil import evaluator_identity
 from yggdrisil.evaluation import EvaluationResult, EvaluatorSuite, evaluate_cached
 from yggdrisil.graph import SQLiteStateGraph
 
@@ -69,6 +70,10 @@ async def test_evaluator_identity_includes_version_and_config(tmp_path: Path) ->
 
     assert len({record.evaluator_id for record in records}) == 3
     assert len(graph.evaluations("state")) == 3
+    assert (
+        evaluator_identity(RecordingEvaluator("metric", "2", {"offset": 1}, calls))[0]
+        == records[-1].evaluator_id
+    )
 
 
 @pytest.mark.asyncio
