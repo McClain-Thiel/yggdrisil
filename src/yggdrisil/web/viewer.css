@@ -145,6 +145,7 @@ input:focus-visible,
 .canvas-panel,
 .inspector {
   min-width: 0;
+  min-height: 0;
   background: var(--paper);
 }
 
@@ -340,12 +341,6 @@ input:focus-visible,
   font-size: 10px;
 }
 
-.node .node-score {
-  fill: var(--teal);
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 9px;
-}
-
 .empty-state {
   position: absolute;
   inset: 0;
@@ -413,6 +408,10 @@ input:focus-visible,
   grid-template-rows: auto 43px minmax(0, 1fr);
 }
 
+.inspector > * {
+  min-width: 0;
+}
+
 .inspector-heading {
   min-height: 136px;
   padding: 22px 22px 18px;
@@ -447,6 +446,7 @@ input:focus-visible,
 }
 
 .tab {
+  min-width: 0;
   flex: 1;
   color: var(--muted);
   border: 0;
@@ -532,15 +532,16 @@ pre {
   word-break: break-word;
 }
 
-.trace-card,
+.record-card,
 .link-card {
+  min-width: 0;
   margin-bottom: 10px;
   padding: 12px;
   border: 1px solid var(--line);
   background: #fff;
 }
 
-.trace-card header,
+.record-card header,
 .link-card header {
   display: flex;
   justify-content: space-between;
@@ -551,11 +552,18 @@ pre {
   font-size: 10px;
 }
 
-.trace-card pre,
+.record-card pre,
 .link-card pre {
+  max-width: 100%;
   padding: 0;
+  overflow-wrap: anywhere;
   border: 0;
   background: transparent;
+}
+
+.record-card pre {
+  max-height: 520px;
+  overflow: auto;
 }
 
 .link-card {
@@ -604,6 +612,47 @@ pre {
 
   .run-stats div:first-child {
     display: none;
+  }
+}
+
+@media (max-width: 850px) {
+  body {
+    min-width: 0;
+  }
+
+  .masthead {
+    grid-template-columns: auto 1fr auto;
+    gap: 14px;
+    padding: 0 14px;
+  }
+
+  .descriptor,
+  .run-stats div:first-child {
+    display: none;
+  }
+
+  .run-stats {
+    justify-self: center;
+    gap: 14px;
+  }
+
+  .workspace {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 42vw);
+  }
+
+  .search-field {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .toolbar-rule {
+    display: none;
+  }
+
+  .tab {
+    padding-inline: 4px;
+    font-size: 9px;
+    letter-spacing: 0.05em;
   }
 }
 

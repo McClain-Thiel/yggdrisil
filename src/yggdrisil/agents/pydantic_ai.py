@@ -41,13 +41,18 @@ def _require_pydantic_ai() -> Any:
 
 class PydanticAINavigator:
     def __init__(
-        self, agent: Any, *, prompt: Callable[[NavigatorContext], str] | None = None
+        self,
+        agent: Any,
+        *,
+        model: str | None = None,
+        prompt: Callable[[NavigatorContext], str] | None = None,
     ) -> None:
         self.agent = agent
+        self.model = model
         self.prompt = prompt or format_navigator_prompt
 
     async def plan(self, context: NavigatorContext) -> NavigationPlan:
-        result = await self.agent.run(self.prompt(context))
+        result = await self.agent.run(self.format_prompt(context))
         output = result.output
         if isinstance(output, NavigationPlan):
             return output
@@ -67,19 +72,24 @@ class PydanticAINavigator:
             ]
         )
 
+    def format_prompt(self, context: NavigatorContext) -> str:
+        return self.prompt(context)
+
 
 class PydanticAIExplorer(Generic[State, Action]):
     def __init__(
         self,
         agent: Any,
         *,
+        model: str | None = None,
         prompt: Callable[[ExplorerContext[State]], str] | None = None,
     ) -> None:
         self.agent = agent
+        self.model = model
         self.prompt = prompt or format_explorer_prompt
 
     async def explore(self, context: ExplorerContext[State]) -> ExplorerResult[Action]:
-        result = await self.agent.run(self.prompt(context))
+        result = await self.agent.run(self.format_prompt(context))
         output = result.output
         if isinstance(output, ExplorerResult):
             if not output.trace:
@@ -89,11 +99,14 @@ class PydanticAIExplorer(Generic[State, Action]):
                     trace=_trace_from_run(result),
                 )
             return output
-        actions = list(getattr(output, "actions"))
+        actions = list(output.actions)
         note = getattr(output, "note", None)
         trace = list(getattr(output, "trace", None) or [])
         trace.extend(_trace_from_run(result))
         return ExplorerResult(actions=actions, note=note, trace=trace)
+
+    def format_prompt(self, context: ExplorerContext[State]) -> str:
+        return self.prompt(context)
 
 
 def make_navigator(
@@ -110,7 +123,7 @@ def make_navigator(
         instructions=instructions or DEFAULT_NAVIGATOR_INSTRUCTIONS,
         tools=list(tools),
     )
-    return PydanticAINavigator(agent, prompt=prompt)
+    return PydanticAINavigator(agent, model=model, prompt=prompt)
 
 
 def make_explorer(
@@ -134,24 +147,18 @@ def make_explorer(
         instructions=instructions or DEFAULT_EXPLORER_INSTRUCTIONS,
         tools=list(tools),
     )
-    return PydanticAIExplorer(agent, prompt=prompt)
+    return PydanticAIExplorer(agent, model=model, prompt=prompt)
 
 
 def _trace_from_run(result: Any) -> list[dict[str, Any]]:
     """Best-effort extract of tool calls from a PydanticAI run result."""
     messages = getattr(result, "all_messages", None)
     if callable(messages):
-        try:
-            messages = messages()
-        except TypeError:
-            messages = []
+        messages = messages()
     if not messages:
         messages = getattr(result, "new_messages", None)
         if callable(messages):
-            try:
-                messages = messages()
-            except TypeError:
-                messages = []
+            messages = messages()
     if not messages:
         return []
     trace: list[dict[str, Any]] = []

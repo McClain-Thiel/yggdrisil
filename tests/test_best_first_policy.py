@@ -18,8 +18,8 @@ async def test_best_first_expands_highest_scored_frontier(tmp_path: Path) -> Non
     high = problem.apply(problem.initial_state, Combine("4", "6", "+"))
     low_id = problem.state_key(low)
     high_id = problem.state_key(high)
-    graph.add_state(low_id, low, metadata={"score": 1.0})
-    graph.add_state(high_id, high, metadata={"score": 4.0})
+    graph.add_state(low_id, low)
+    graph.add_state(high_id, high)
 
     seen = []
 
@@ -27,8 +27,13 @@ async def test_best_first_expands_highest_scored_frontier(tmp_path: Path) -> Non
         seen.append(state)
         return problem.legal_actions(state)[:1]
 
-    policy = BestFirstPolicy(sample, n_proposals=1, seed=0)
-    proposals = await policy.step(
+    policy = BestFirstPolicy(
+        sample,
+        lambda node, evaluations: -problem.distance(node.state),
+        n_proposals=1,
+        seed=0,
+    )
+    decisions = await policy.step(
         graph.readonly(),
         RunStatus(
             step=0,
@@ -40,22 +45,34 @@ async def test_best_first_expands_highest_scored_frontier(tmp_path: Path) -> Non
     )
 
     assert seen == [high]
-    assert proposals[0].parent_id == high_id
+    assert decisions[0].proposals[0].parent_id == high_id
 
 
 @pytest.mark.asyncio
 async def test_zero_proposals_returns_empty(tmp_path: Path) -> None:
     graph = SQLiteStateGraph(tmp_path / "g.sqlite")
-    policy = BestFirstPolicy(lambda state, rng: [state], n_proposals=0)
-    proposals = await policy.step(
+    policy = BestFirstPolicy(
+        lambda state, rng: [state],
+        lambda node, evaluations: 0.0,
+        n_proposals=0,
+    )
+    decisions = await policy.step(
         graph.readonly(),
         RunStatus(0, 0, 0, 0, RunLimits(max_steps=1)),
     )
-    assert proposals == []
+    assert decisions == []
 
 
 def test_invalid_best_first_limits_are_rejected() -> None:
     with pytest.raises(ValueError, match="n_proposals"):
-        BestFirstPolicy(lambda state, rng: [], n_proposals=-1)
+        BestFirstPolicy(
+            lambda state, rng: [],
+            lambda node, evaluations: 0.0,
+            n_proposals=-1,
+        )
     with pytest.raises(ValueError, match="frontier_limit"):
-        BestFirstPolicy(lambda state, rng: [], frontier_limit=0)
+        BestFirstPolicy(
+            lambda state, rng: [],
+            lambda node, evaluations: 0.0,
+            frontier_limit=0,
+        )

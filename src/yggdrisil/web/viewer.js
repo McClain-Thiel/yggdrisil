@@ -4,8 +4,13 @@ const NS = "http://www.w3.org/2000/svg";
 const state = {
   nodes: new Map(),
   edges: new Map(),
+  evaluations: new Map(),
+  decisions: new Map(),
+  proposalEvents: new Map(),
   stateCursor: 0,
   edgeCursor: 0,
+  evaluationCursor: 0,
+  decisionCursor: 0,
   run: null,
   selected: null,
   selectedKind: null,
@@ -22,8 +27,9 @@ const el = Object.fromEntries(
     "empty-state", "run-id", "run-step", "state-count", "edge-count",
     "connection", "connection-label", "graph-path", "search", "frontier-only",
     "selection-kind", "selection-title", "selection-subtitle", "selection-facts",
-    "state-value", "state-metadata", "trace-list", "link-list", "trace-count",
-    "link-count", "zoom-in", "zoom-out", "fit",
+    "state-value", "state-metadata", "evaluation-list", "decision-list",
+    "link-list", "evaluation-count", "decision-count", "link-count",
+    "zoom-in", "zoom-out", "fit",
   ].map((id) => [id, document.getElementById(id)])
 );
 
@@ -88,6 +94,8 @@ async function poll() {
     const query = new URLSearchParams({
       state_after: String(state.stateCursor),
       edge_after: String(state.edgeCursor),
+      evaluation_after: String(state.evaluationCursor),
+      decision_after: String(state.decisionCursor),
     });
     const response = await fetch(`/api/updates?${query}`, { cache: "no-store" });
     const payload = await response.json();
@@ -100,14 +108,40 @@ async function poll() {
       edge.metadata = displayValue(edge.metadata);
       state.edges.set(edge.edge_id, edge);
     });
+    payload.evaluations.forEach((evaluation) => {
+      evaluation.metrics = displayValue(evaluation.metrics);
+      evaluation.metadata = displayValue(evaluation.metadata);
+      state.evaluations.set(evaluation.evaluation_id, evaluation);
+    });
+    payload.decisions.forEach((decision) => {
+      decision.selected_state_ids = displayValue(decision.selected_state_ids);
+      decision.input_context = displayValue(decision.input_context);
+      decision.tool_calls = displayValue(decision.tool_calls);
+      decision.output = displayValue(decision.output);
+      decision.metadata = displayValue(decision.metadata);
+      state.decisions.set(decision.decision_id, decision);
+    });
+    let eventsChanged = false;
+    payload.proposal_events.forEach((event) => {
+      event.action = displayValue(event.action);
+      event.metadata = displayValue(event.metadata);
+      const previous = state.proposalEvents.get(event.event_id);
+      if (!previous || safeJson(previous) !== safeJson(event)) eventsChanged = true;
+      state.proposalEvents.set(event.event_id, event);
+    });
     if (payload.run) {
       payload.run.config = displayValue(payload.run.config);
       payload.run.metadata = displayValue(payload.run.metadata);
     }
     state.stateCursor = payload.state_cursor;
     state.edgeCursor = payload.edge_cursor;
+    state.evaluationCursor = payload.evaluation_cursor;
+    state.decisionCursor = payload.decision_cursor;
     updateStatus(payload);
-    if (payload.states.length || payload.edges.length || !state.fitted) {
+    const changed = payload.states.length || payload.edges.length
+      || payload.evaluations.length || payload.decisions.length
+      || eventsChanged;
+    if (changed || !state.fitted) {
       renderGraph();
       renderInspector();
       if (!state.fitted && state.nodes.size) fitGraph();
@@ -214,8 +248,6 @@ function renderGraph() {
     group.append(svg("rect", { x: 0, y: 0, width: 142, height: 54, rx: 3 }));
     group.append(textNode(10, 17, shortId(id), "node-id"));
     group.append(textNode(10, 34, summarize(node.state), "node-summary"));
-    const score = node.metadata?.score;
-    if (typeof score === "number") group.append(textNode(132, 17, formatScore(score), "node-score", "end"));
     const choose = (event) => {
       event.stopPropagation();
       select("node", id);
@@ -288,7 +320,10 @@ function renderInspector() {
 function renderNodeInspector(node) {
   if (!node) return;
   const links = incidentEdges(node.state_id);
-  const traces = traceItems(node.metadata, node.state);
+  const evaluations = [...state.evaluations.values()].filter(
+    (evaluation) => evaluation.state_id === node.state_id
+  );
+  const decisions = decisionsForSelection("node", node.state_id);
   el["selection-kind"].textContent = "STATE NODE";
   el["selection-title"].textContent = shortId(node.state_id, 24);
   el["selection-title"].title = node.state_id;
@@ -301,13 +336,14 @@ function renderNodeInspector(node) {
   ]);
   el["state-value"].textContent = pretty(node.state);
   el["state-metadata"].textContent = pretty(node.metadata);
-  renderTraces(traces);
+  renderEvaluations(evaluations);
+  renderDecisions(decisions);
   renderLinks(links, node.state_id);
 }
 
 function renderEdgeInspector(edge) {
   if (!edge) return;
-  const traces = traceItems(edge.metadata, edge.action);
+  const decisions = decisionsForSelection("edge", edge.edge_id);
   el["selection-kind"].textContent = "TRANSITION";
   el["selection-title"].textContent = shortId(edge.edge_id, 24);
   el["selection-title"].title = edge.edge_id;
@@ -320,7 +356,8 @@ function renderEdgeInspector(edge) {
   ]);
   el["state-value"].textContent = pretty(edge.action);
   el["state-metadata"].textContent = pretty(edge.metadata);
-  renderTraces(traces);
+  renderEvaluations([]);
+  renderDecisions(decisions);
   renderLinks([edge], null);
 }
 
@@ -338,48 +375,100 @@ function renderFacts(items) {
   replaceChildren(el["selection-facts"], children);
 }
 
-function traceItems(...sources) {
-  for (const source of sources) {
-    const found = [];
-    collectTraces(displayValue(source), found, new Set(), 0);
-    if (found.length) return found;
-  }
-  return [];
-}
-
-function collectTraces(value, found, visited, depth) {
-  if (depth > 5 || value == null || typeof value !== "object" || visited.has(value)) return;
-  visited.add(value);
-  if (Array.isArray(value.trace)) value.trace.forEach((item) => found.push(item));
-  Object.entries(value).forEach(([key, child]) => {
-    if (key !== "trace") collectTraces(child, found, visited, depth + 1);
-  });
-}
-
-function renderTraces(traces) {
-  el["trace-count"].textContent = String(traces.length);
-  if (!traces.length) {
+function renderEvaluations(evaluations) {
+  el["evaluation-count"].textContent = String(evaluations.length);
+  if (!evaluations.length) {
     const empty = document.createElement("p");
     empty.className = "placeholder";
-    empty.textContent = "No trace records on this selection.";
-    replaceChildren(el["trace-list"], [empty]);
+    empty.textContent = "No evaluations for this state.";
+    replaceChildren(el["evaluation-list"], [empty]);
     return;
   }
-  const cards = traces.map((trace, index) => {
+  const cards = evaluations.map((evaluation) => {
     const card = document.createElement("article");
-    card.className = "trace-card";
+    card.className = "record-card";
     const header = document.createElement("header");
     const label = document.createElement("span");
-    const counter = document.createElement("span");
-    label.textContent = trace.tool || trace.kind || trace.event || "record";
-    counter.textContent = `#${index + 1}`;
-    header.append(label, counter);
+    const version = document.createElement("span");
+    label.textContent = evaluation.evaluator;
+    version.textContent = `v${evaluation.version}`;
+    header.append(label, version);
     const pre = document.createElement("pre");
-    pre.textContent = safeJson(trace, 2);
+    pre.textContent = safeJson({
+      metrics: evaluation.metrics,
+      metadata: evaluation.metadata,
+      evaluator_id: evaluation.evaluator_id,
+    }, 2);
     card.append(header, pre);
     return card;
   });
-  replaceChildren(el["trace-list"], cards);
+  replaceChildren(el["evaluation-list"], cards);
+}
+
+function decisionsForSelection(kind, id) {
+  const linked = new Set();
+  state.proposalEvents.forEach((event) => {
+    if (kind === "edge" && event.edge_id === id) linked.add(event.decision_id);
+    if (kind === "node" && (event.parent_id === id || event.child_id === id)) {
+      linked.add(event.decision_id);
+    }
+  });
+  if (kind === "node") {
+    state.decisions.forEach((decision) => {
+      if (decision.selected_state_ids.includes(id)) linked.add(decision.decision_id);
+    });
+  }
+  return [...linked]
+    .map((decisionId) => state.decisions.get(decisionId))
+    .filter(Boolean)
+    .sort((a, b) => a.created_step - b.created_step || a.role.localeCompare(b.role));
+}
+
+function renderDecisions(decisions) {
+  el["decision-count"].textContent = String(decisions.length);
+  if (!decisions.length) {
+    const empty = document.createElement("p");
+    empty.className = "placeholder";
+    empty.textContent = "No decisions linked to this selection.";
+    replaceChildren(el["decision-list"], [empty]);
+    return;
+  }
+  const cards = decisions.map((decision) => {
+    const events = [...state.proposalEvents.values()].filter(
+      (event) => event.decision_id === decision.decision_id
+    );
+    const card = document.createElement("article");
+    card.className = "record-card";
+    const header = document.createElement("header");
+    const label = document.createElement("span");
+    const step = document.createElement("span");
+    label.textContent = decision.model
+      ? `${decision.role} · ${decision.model}`
+      : decision.role;
+    step.textContent = `step ${decision.created_step}`;
+    header.append(label, step);
+    const pre = document.createElement("pre");
+    pre.textContent = safeJson({
+      policy: decision.policy,
+      selected_state_ids: decision.selected_state_ids,
+      input: decision.input_context,
+      tool_calls: decision.tool_calls,
+      output: decision.output,
+      metadata: decision.metadata,
+      proposals: events.map((event) => ({
+        parent_id: event.parent_id,
+        action: event.action,
+        metadata: event.metadata,
+        outcome: event.outcome,
+        child_id: event.child_id,
+        edge_id: event.edge_id,
+        error: event.error,
+      })),
+    }, 2);
+    card.append(header, pre);
+    return card;
+  });
+  replaceChildren(el["decision-list"], cards);
 }
 
 function renderLinks(edges, selectedNodeId) {
@@ -512,9 +601,7 @@ function summarize(value, length = 46) {
     } else if ("left" in decoded && "right" in decoded && "op" in decoded) {
       text = `${decoded.left} ${decoded.op} ${decoded.right}`;
     } else {
-      const entries = Object.entries(decoded).filter(
-        ([key, item]) => key !== "__type__" && !(key === "trace" && Array.isArray(item) && item.length === 0)
-      );
+      const entries = Object.entries(decoded).filter(([key]) => key !== "__type__");
       text = entries.length === 1 ? `${entries[0][0]}: ${safeJson(entries[0][1])}` : safeJson(Object.fromEntries(entries));
     }
   } else {
@@ -536,10 +623,6 @@ function safeJson(value, spacing = 0) {
 function shortId(id, length = 12) {
   if (!id) return "—";
   return id.length > length ? `${id.slice(0, length)}…` : id;
-}
-
-function formatScore(value) {
-  return Number.isInteger(value) ? String(value) : value.toPrecision(4);
 }
 
 function clamp(value, low, high) {

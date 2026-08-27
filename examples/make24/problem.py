@@ -10,7 +10,6 @@ import operator
 import random
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any
 
 from yggdrisil.serialize import serializable, stable_hash
 
@@ -56,18 +55,13 @@ def _sorted_values(values: tuple[str, ...]) -> tuple[str, ...]:
 @serializable
 @dataclass(frozen=True)
 class Pool:
-    """Remaining numbers plus the explorer trace that produced this node.
-
-    `values` is identity. `trace` is memory. `state_key` must ignore `trace`.
-    """
+    """The remaining numbers. Agent history is stored as decisions."""
 
     values: tuple[str, ...]
-    trace: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         normalized = _sorted_values(tuple(canon(v) for v in self.values))
         object.__setattr__(self, "values", normalized)
-        object.__setattr__(self, "trace", tuple(self.trace))
 
     @classmethod
     def from_ints(cls, *numbers: int | str | Fraction) -> Pool:
@@ -147,18 +141,6 @@ class Make24:
 
     def apply(self, state: Pool, action: Combine) -> Pool:
         return apply_combine(state, action)
-
-    # --8<-- [start:decorate]
-    def decorate(self, state: Pool, metadata: dict[str, Any]) -> Pool:
-        """Stamp the explorer's tool trace onto the child state.
-
-        Identity is unchanged: `state_key` still hashes `values` only.
-        The first writer wins; later merges keep the stored state.
-        """
-        raw = metadata.get("trace") or ()
-        return Pool(values=state.values, trace=tuple(raw))
-
-    # --8<-- [end:decorate]
 
     def validate_state(self, state: Pool) -> None:
         for value in state.values:

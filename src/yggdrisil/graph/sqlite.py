@@ -5,10 +5,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
+from yggdrisil.evaluation import EvaluationResult
 from yggdrisil.exceptions import CycleError, UnknownStateError
 from yggdrisil.graph.base import StateGraph
 from yggdrisil.serialize import dumps, loads, stable_hash
-from yggdrisil.types import Edge, RunRecord, StateNode
+from yggdrisil.types import (
+    DecisionRecord,
+    Edge,
+    EvaluationRecord,
+    ProposalEvent,
+    RunRecord,
+    StateNode,
+)
 
 State = TypeVar("State")
 Action = TypeVar("Action")
@@ -45,11 +53,64 @@ CREATE TABLE IF NOT EXISTS runs (
     metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE IF NOT EXISTS evaluations (
+    evaluation_id TEXT PRIMARY KEY,
+    evaluator_id TEXT NOT NULL,
+    state_id TEXT NOT NULL REFERENCES states(state_id),
+    evaluator TEXT NOT NULL,
+    version TEXT NOT NULL,
+    config_hash TEXT NOT NULL,
+    metrics_json TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE(state_id, evaluator_id)
+);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    decision_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    policy TEXT NOT NULL,
+    role TEXT NOT NULL,
+    model TEXT,
+    selected_state_ids_json TEXT NOT NULL DEFAULT '[]',
+    input_context_json TEXT NOT NULL DEFAULT 'null',
+    tool_calls_json TEXT NOT NULL DEFAULT '[]',
+    output_json TEXT NOT NULL DEFAULT 'null',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    created_step INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS proposal_events (
+    event_id TEXT PRIMARY KEY,
+    decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    parent_id TEXT NOT NULL,
+    child_id TEXT,
+    edge_id TEXT REFERENCES edges(edge_id),
+    action_json TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    outcome TEXT NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    created_step INTEGER NOT NULL,
+    proposal_index INTEGER NOT NULL,
+    sequence_index INTEGER NOT NULL,
+    UNIQUE(decision_id, proposal_index)
+);
+
 CREATE INDEX IF NOT EXISTS idx_edges_parent ON edges(parent_id);
 CREATE INDEX IF NOT EXISTS idx_edges_child ON edges(child_id);
 CREATE INDEX IF NOT EXISTS idx_states_created_step ON states(created_step);
 CREATE INDEX IF NOT EXISTS idx_edges_created_step ON edges(created_step);
 CREATE INDEX IF NOT EXISTS idx_runs_updated_at ON runs(updated_at);
+CREATE INDEX IF NOT EXISTS idx_evaluations_state ON evaluations(state_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_run_step ON decisions(run_id, created_step);
+CREATE INDEX IF NOT EXISTS idx_proposal_events_decision ON proposal_events(decision_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_events_run_step ON proposal_events(run_id, created_step);
+CREATE INDEX IF NOT EXISTS idx_proposal_events_parent ON proposal_events(parent_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_events_child ON proposal_events(child_id);
+CREATE INDEX IF NOT EXISTS idx_proposal_events_edge ON proposal_events(edge_id);
 """
 
 
@@ -77,6 +138,7 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
             self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
+        self._migrate_proposal_events()
         self._conn.commit()
 
     def close(self) -> None:
@@ -168,7 +230,7 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
         state_metadata: dict[str, Any] | None = None,
         edge_metadata: dict[str, Any] | None = None,
         created_step: int = 0,
-    ) -> tuple[StateNode[State], Edge[Action], bool]:
+    ) -> tuple[StateNode[State], Edge[Action], bool, bool]:
         """Insert a child and its incoming edge in one transaction."""
 
         if not self.has_state(parent_id):
@@ -185,6 +247,13 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
         )
         now = _utcnow()
         state_created = not self.has_state(child_id)
+        edge_created = (
+            self._conn.execute(
+                "SELECT 1 FROM edges WHERE edge_id = ?",
+                (edge_id,),
+            ).fetchone()
+            is None
+        )
 
         with self._conn:
             self._conn.execute(
@@ -228,6 +297,7 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
             self.get_state(child_id),
             self._load_edge(row["edge_id"]),
             state_created,
+            edge_created,
         )
 
     def get_state(self, state_id: str) -> StateNode[State]:
@@ -256,6 +326,72 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
         )
         self._conn.commit()
         return self.get_state(state_id)
+
+    def add_evaluation(
+        self,
+        state_id: str,
+        *,
+        evaluator_id: str,
+        evaluator: str,
+        version: str,
+        config_hash: str,
+        result: EvaluationResult,
+    ) -> EvaluationRecord:
+        self.get_state(state_id)
+        evaluation_id = stable_hash(
+            {"state_id": state_id, "evaluator_id": evaluator_id}
+        )
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO evaluations (
+                evaluation_id, evaluator_id, state_id, evaluator, version,
+                config_hash, metrics_json, metadata_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                evaluation_id,
+                evaluator_id,
+                state_id,
+                evaluator,
+                version,
+                config_hash,
+                dumps(result.metrics),
+                dumps(result.metadata),
+                _utcnow(),
+            ),
+        )
+        self._conn.commit()
+        record = self.get_evaluation(state_id, evaluator_id)
+        if record is None:
+            raise RuntimeError("evaluation insert did not create a record")
+        return record
+
+    def get_evaluation(
+        self,
+        state_id: str,
+        evaluator_id: str,
+    ) -> EvaluationRecord | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM evaluations
+            WHERE state_id = ? AND evaluator_id = ?
+            """,
+            (state_id, evaluator_id),
+        ).fetchone()
+        return self._row_to_evaluation(row) if row is not None else None
+
+    def evaluations(self, state_id: str) -> list[EvaluationRecord]:
+        self.get_state(state_id)
+        rows = self._conn.execute(
+            """
+            SELECT * FROM evaluations
+            WHERE state_id = ?
+            ORDER BY evaluator, version, config_hash
+            """,
+            (state_id,),
+        ).fetchall()
+        return [self._row_to_evaluation(row) for row in rows]
 
     def parents(self, state_id: str) -> list[StateNode[State]]:
         self.get_state(state_id)
@@ -399,6 +535,199 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
             return None
         return self.get_run(row["run_id"])
 
+    def add_decision(
+        self,
+        decision_id: str,
+        *,
+        run_id: str,
+        policy: str,
+        role: str,
+        model: str | None,
+        selected_state_ids: list[str],
+        input_context: Any,
+        tool_calls: list[dict[str, Any]],
+        output: Any,
+        metadata: dict[str, Any],
+        created_step: int,
+    ) -> DecisionRecord:
+        self.get_run(run_id)
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO decisions (
+                decision_id, run_id, policy, role, model,
+                selected_state_ids_json, input_context_json, tool_calls_json,
+                output_json, metadata_json, created_at, created_step
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                decision_id,
+                run_id,
+                policy,
+                role,
+                model,
+                dumps(selected_state_ids),
+                dumps(input_context),
+                dumps(tool_calls),
+                dumps(output),
+                dumps(metadata),
+                _utcnow(),
+                created_step,
+            ),
+        )
+        self._conn.commit()
+        return self.get_decision(decision_id)
+
+    def get_decision(self, decision_id: str) -> DecisionRecord:
+        row = self._conn.execute(
+            "SELECT * FROM decisions WHERE decision_id = ?",
+            (decision_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(decision_id)
+        return self._row_to_decision(row)
+
+    def decisions(
+        self,
+        run_id: str | None = None,
+        limit: int | None = None,
+        *,
+        newest: bool = False,
+    ) -> list[DecisionRecord]:
+        direction = "DESC" if newest else "ASC"
+        parameters: list[Any] = []
+        if run_id is None:
+            sql = (
+                "SELECT * FROM decisions "
+                f"ORDER BY created_at {direction}, decision_id {direction}"
+            )
+        else:
+            self.get_run(run_id)
+            sql = (
+                "SELECT * FROM decisions WHERE run_id = ? "
+                f"ORDER BY created_step {direction}, "
+                f"created_at {direction}, decision_id {direction}"
+            )
+            parameters.append(run_id)
+        if limit is not None:
+            sql += " LIMIT ?"
+            parameters.append(limit)
+        rows = self._conn.execute(sql, parameters).fetchall()
+        return [self._row_to_decision(row) for row in rows]
+
+    def provenance_counts(self, run_id: str, created_step: int) -> tuple[int, int]:
+        self.get_run(run_id)
+        row = self._conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM decisions
+                 WHERE run_id = ? AND created_step = ?) AS decisions,
+                (SELECT COUNT(*) FROM proposal_events
+                 WHERE run_id = ? AND created_step = ?) AS events
+            """,
+            (run_id, created_step, run_id, created_step),
+        ).fetchone()
+        return int(row["decisions"]), int(row["events"])
+
+    def add_proposal_event(
+        self,
+        event_id: str,
+        *,
+        decision_id: str,
+        run_id: str,
+        parent_id: str,
+        action: Action,
+        metadata: dict[str, Any],
+        created_step: int,
+        proposal_index: int,
+        sequence_index: int,
+    ) -> ProposalEvent[Action]:
+        self.get_decision(decision_id)
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO proposal_events (
+                event_id, decision_id, run_id, parent_id, action_json,
+                metadata_json, outcome, created_at, created_step,
+                proposal_index, sequence_index
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                decision_id,
+                run_id,
+                parent_id,
+                dumps(action),
+                dumps(metadata),
+                _utcnow(),
+                created_step,
+                proposal_index,
+                sequence_index,
+            ),
+        )
+        self._conn.commit()
+        return self.get_proposal_event(event_id)
+
+    def finish_proposal_event(
+        self,
+        event_id: str,
+        *,
+        outcome: str,
+        child_id: str | None = None,
+        edge_id: str | None = None,
+        error: str | None = None,
+    ) -> ProposalEvent[Action]:
+        self.get_proposal_event(event_id)
+        self._conn.execute(
+            """
+            UPDATE proposal_events
+            SET outcome = ?, child_id = ?, edge_id = ?, error = ?
+            WHERE event_id = ?
+            """,
+            (outcome, child_id, edge_id, error, event_id),
+        )
+        self._conn.commit()
+        return self.get_proposal_event(event_id)
+
+    def get_proposal_event(self, event_id: str) -> ProposalEvent[Action]:
+        row = self._conn.execute(
+            "SELECT * FROM proposal_events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(event_id)
+        return self._row_to_proposal_event(row)
+
+    def proposal_events(
+        self,
+        *,
+        run_id: str | None = None,
+        decision_id: str | None = None,
+        state_id: str | None = None,
+        edge_id: str | None = None,
+    ) -> list[ProposalEvent[Action]]:
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if run_id is not None:
+            self.get_run(run_id)
+            clauses.append("run_id = ?")
+            parameters.append(run_id)
+        if decision_id is not None:
+            clauses.append("decision_id = ?")
+            parameters.append(decision_id)
+        if state_id is not None:
+            clauses.append("(parent_id = ? OR child_id = ?)")
+            parameters.extend([state_id, state_id])
+        if edge_id is not None:
+            clauses.append("edge_id = ?")
+            parameters.append(edge_id)
+        sql = "SELECT * FROM proposal_events"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_step, sequence_index, decision_id, proposal_index"
+        rows = self._conn.execute(sql, parameters).fetchall()
+        return [self._row_to_proposal_event(row) for row in rows]
+
     def _row_to_state(self, row: Any) -> StateNode[State]:
         return StateNode(
             state_id=row["state_id"],
@@ -407,6 +736,70 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
             created_at=row["created_at"],
             created_step=row["created_step"],
         )
+
+    def _row_to_evaluation(self, row: Any) -> EvaluationRecord:
+        return EvaluationRecord(
+            evaluation_id=row["evaluation_id"],
+            evaluator_id=row["evaluator_id"],
+            state_id=row["state_id"],
+            evaluator=row["evaluator"],
+            version=row["version"],
+            config_hash=row["config_hash"],
+            metrics=loads(row["metrics_json"]),
+            metadata=loads(row["metadata_json"]),
+            created_at=row["created_at"],
+        )
+
+    def _row_to_decision(self, row: Any) -> DecisionRecord:
+        return DecisionRecord(
+            decision_id=row["decision_id"],
+            run_id=row["run_id"],
+            policy=row["policy"],
+            role=row["role"],
+            model=row["model"],
+            selected_state_ids=loads(row["selected_state_ids_json"]),
+            input_context=loads(row["input_context_json"]),
+            tool_calls=loads(row["tool_calls_json"]),
+            output=loads(row["output_json"]),
+            metadata=loads(row["metadata_json"]),
+            created_at=row["created_at"],
+            created_step=row["created_step"],
+        )
+
+    def _row_to_proposal_event(self, row: Any) -> ProposalEvent[Action]:
+        return ProposalEvent(
+            event_id=row["event_id"],
+            decision_id=row["decision_id"],
+            run_id=row["run_id"],
+            parent_id=row["parent_id"],
+            action=loads(row["action_json"]),
+            outcome=row["outcome"],
+            metadata=loads(row["metadata_json"]),
+            child_id=row["child_id"],
+            edge_id=row["edge_id"],
+            error=row["error"],
+            created_at=row["created_at"],
+            created_step=row["created_step"],
+            proposal_index=row["proposal_index"],
+            sequence_index=row["sequence_index"],
+        )
+
+    def _migrate_proposal_events(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(proposal_events)")
+        }
+        if "metadata_json" not in columns:
+            self._conn.execute(
+                "ALTER TABLE proposal_events "
+                "ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "sequence_index" not in columns:
+            self._conn.execute(
+                "ALTER TABLE proposal_events "
+                "ADD COLUMN sequence_index INTEGER NOT NULL DEFAULT 0"
+            )
+            self._conn.execute("UPDATE proposal_events SET sequence_index = rowid")
 
     def _load_edge(self, edge_id: str) -> Edge[Action]:
         row = self._conn.execute(

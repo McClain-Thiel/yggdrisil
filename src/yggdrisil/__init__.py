@@ -1,6 +1,12 @@
 from typing import Any
 
 from yggdrisil.cache import ToolCache, cached_tool
+from yggdrisil.evaluation import (
+    EvaluationResult,
+    Evaluator,
+    EvaluatorSuite,
+    evaluate_cached,
+)
 from yggdrisil.exceptions import (
     CycleError,
     GraphError,
@@ -12,20 +18,34 @@ from yggdrisil.graph import ReadOnlyStateGraph, SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
 from yggdrisil.objective import Objective
 from yggdrisil.policies import BestFirstPolicy, RandomPolicy
-from yggdrisil.policy import Policy, Proposal
+from yggdrisil.policy import Decision, Policy, Proposal
 from yggdrisil.runner import Runner
 from yggdrisil.serialize import serializable, stable_hash
-from yggdrisil.types import Edge, RunResult, StateNode
+from yggdrisil.types import (
+    DecisionRecord,
+    Edge,
+    EvaluationRecord,
+    ProposalEvent,
+    RunResult,
+    StateNode,
+)
 
 __all__ = [
-    "CycleError",
     "BestFirstPolicy",
+    "CycleError",
+    "Decision",
+    "DecisionRecord",
     "Edge",
+    "EvaluationRecord",
+    "EvaluationResult",
+    "Evaluator",
+    "EvaluatorSuite",
     "GraphError",
     "NavigatorExplorerPolicy",
     "Objective",
     "Policy",
     "Proposal",
+    "ProposalEvent",
     "RandomPolicy",
     "ReadOnlyStateGraph",
     "RunLimits",
@@ -39,6 +59,7 @@ __all__ = [
     "UnknownStateError",
     "YggdrisilError",
     "cached_tool",
+    "evaluate_cached",
     "serializable",
     "stable_hash",
 ]

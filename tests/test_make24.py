@@ -45,14 +45,6 @@ def test_pool_identity_ignores_construction_order() -> None:
     )
 
 
-def test_state_key_ignores_trace() -> None:
-    problem = Make24()
-    bare = Pool.from_ints(1, 3, 4, 6)
-    stamped = problem.decorate(bare, {"trace": [{"tool": "add", "a": "1", "b": "3"}]})
-    assert stamped.trace[0]["tool"] == "add"
-    assert problem.state_key(bare) == problem.state_key(stamped)
-
-
 def test_arithmetic_tools_record_success_and_failure() -> None:
     kit = ArithmeticTools(Pool.from_ints(1, 3, 4, 6))
     kit.add("1", "3")

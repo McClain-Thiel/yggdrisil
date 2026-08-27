@@ -1,130 +1,89 @@
 # Build a search
 
-Yggdrisil does not ship a domain. A search is three pieces of
-application code: a **problem**, **tools** that can fail, and a
-**policy** that plays. This page builds a complete Make-24 search —
-compose `1, 3, 4, 6` with `+ − × ÷` until the remaining value is 24.
+Yggdrisil does not ship a domain. A search combines a **problem**, optional
+**evaluators**, and a **policy** that returns inspectable decisions. This page
+builds Make-24: compose `1, 3, 4, 6` with `+ − × ÷` until the remaining value is
+24.
 
-The runner is the easy part. The work is:
-
-1. Deciding what counts as the same logical state (`state_key`).
-2. Giving the agent **tools** instead of a move list.
-3. Storing the agent’s transcript **on the state** so the graph, not a
-   chat log, is memory.
-
-Layout in your project:
+The application layout is ordinary Python:
 
 ```text
-problem.py    states, actions, identity, decorate
+problem.py    state, action, identity, transition
 tools.py      add / subtract / multiply / divide
 policy.py     navigator + explorer
-run.py        Runner, graph, limits
+run.py        Runner, graph, limits, objective
 ```
 
-## 1. State is identity plus memory
+## 1. Keep state domain-only
 
-A graph node stores a Python object. Give it two jobs:
+A graph node stores a Python value. For Make-24, the whole state is the
+remaining number pool:
 
 ```python
 --8<-- "examples/make24/problem.py:pool"
 ```
 
-- `values` — remaining numbers. **Where** the search is.
-- `trace` — tool calls the explorer made before this child was
-  committed. **How** an agent thought.
-
-If the trace is part of `state_key`, two explorers that reach `[3, 7]`
-with the same arithmetic but different probes become two nodes. The DAG
-does not merge. Hash only identity:
+Prompts, model outputs, evaluator metrics, and tool transcripts are not part of
+the puzzle position. Keeping them out makes logical identity direct:
 
 ```python
 --8<-- "examples/make24/problem.py:state_key"
 ```
 
-The first writer’s object (including its trace) is what the node keeps.
-Later edges into the same id still record that proposal’s metadata.
+If two paths reach `[3, 7]`, they return the same key and become one node with
+multiple incoming edges.
 
-## 2. Actions are pure
+## 2. Make actions reproducible
 
-An action must not carry the transcript. That belongs on
-`Proposal.metadata`, then on the state via `decorate`.
+An action contains only the domain operation:
 
 ```python
 --8<-- "examples/make24/problem.py:combine"
 ```
 
-`apply` is arithmetic only. It returns a pool with an empty trace. Do
-not copy the parent’s trace onto the child: that would claim the child
-was reasoned about at the parent.
+`Problem.apply(parent, action)` deterministically creates the child. Optional
+`validate_action` and `validate_state` hooks raise when a proposal is invalid.
+The runner, not the policy, calls these hooks and writes the graph.
 
 ```python
 def apply(self, state: Pool, action: Combine) -> Pool:
-    return apply_combine(state, action)  # new Pool, trace=()
+    return apply_combine(state, action)
 ```
 
-## 3. Stamp the trace onto the child
+## 3. Give an explorer tools
 
-After `apply`, the runner calls optional
-an optional `Problem.decorate` method **before**
-computing `state_key`.
-
-```mermaid
-flowchart TD
-  E["Explorer"] -->|"actions + trace"| P["Proposal.metadata['trace']"]
-  P --> R["Runner"]
-  R --> A["apply: child with empty trace"]
-  A --> D["decorate: copy trace onto the child"]
-  D --> K["state_key hashes values only"]
-  K --> G["add_state / add_edge"]
-```
-
-```python
---8<-- "examples/make24/problem.py:decorate"
-```
-
-Each accepted proposal then:
-
-1. `validate_action`
-2. `apply` — deterministic transition
-3. `validate_state`
-4. `decorate` — fold `Proposal.metadata` into the persisted object
-5. `state_key` — must ignore the trace
-6. `add_state` (no-op if that id exists) and `add_edge`
-
-Read the result as `node.state.trace`.
-
-!!! warning "Do not put the trace in `state_key`"
-    `decorate` may change the object. It must not change the id. Two
-    pools with different traces and the same `values` are one node.
-
-## 4. Tools, not a move list
-
-When the next step is expensive or uncertain, the explorer should not
-receive `legal_actions()`. Bind tools to the current pool. They fail if
-a number is missing or on divide-by-zero. Failures stay in the trace.
+When the next step is expensive or uncertain, the explorer need not receive a
+precomputed move list. Here four arithmetic tools are bound to one pool. They
+record both successful and failed probes:
 
 ```python
 --8<-- "examples/make24/tools.py:kit"
 ```
 
-A language model uses the same four callables (`add`, `subtract`,
-`multiply`, `divide`). Bind them per `explore` call so concurrent
-explorers do not share a kit.
+A language model uses the same callables. Binding the toolkit per explorer call
+keeps concurrent explorers independent.
 
-## 5. The explorer returns a trace
+## 4. Return an explorer result
 
-[`ExplorerResult.trace`][yggdrisil.agents.navigator_explorer.ExplorerResult]
-is copied onto every `Proposal` from that call. The stand-in below is
-not a neural net. It **calls the same tools**, then proposes first
-steps that can still reach 24.
+The offline stand-in below calls those tools, ranks its probes, and returns
+direct child actions:
 
 ```python
 --8<-- "examples/make24/policy.py:explore"
 ```
 
-[`NavigatorExplorerPolicy`][yggdrisil.agents.navigator_explorer.NavigatorExplorerPolicy]
-is the agent policy helper in Yggdrisil. The navigator and explorer
-roles are yours:
+[`ExplorerResult.trace`][yggdrisil.agents.navigator_explorer.ExplorerResult] is
+adapter output. [`NavigatorExplorerPolicy`][yggdrisil.agents.navigator_explorer.NavigatorExplorerPolicy]
+turns it into a durable explorer `Decision`:
+
+- the current state id goes in `selected_state_ids`
+- the formatted prompt goes in `input_context`
+- tool calls go in `tool_calls`
+- actions and the note go in `output`
+- each direct child action becomes a `Proposal`
+
+The navigator call is a separate decision, even though it proposes no edge.
+There is no hidden conversation history.
 
 ```python
 from yggdrisil.agents import NavigatorExplorerPolicy
@@ -133,11 +92,30 @@ lm = TinyMake24LM(problem, seed=0)
 policy = NavigatorExplorerPolicy(lm, lm, goal="Make 24.", max_requests=2)
 ```
 
-A PydanticAI explorer (`pip install "yggdrisil[agents]"`) takes the
-same tools. Include `state.trace` in the prompt when it is non-empty so
-the model reads **this node**, not a conversation.
+The PydanticAI adapter (`pip install "yggdrisil[agents]"`) produces the same
+records with a real model.
 
-## 6. Run
+## 5. Materialize proposals
+
+For each policy step, the runner first stores decisions and pending proposal
+events. It then applies proposals and links every attempt to the canonical
+edge.
+
+```mermaid
+flowchart LR
+  P[Policy] --> D[Decision]
+  D --> E[ProposalEvent: pending]
+  E --> R[Runner validates + applies]
+  R --> S[State: insert or reuse]
+  R --> G[Edge: insert or reuse]
+  G --> O[ProposalEvent: created or reused]
+```
+
+This matters when two agents propose the same transition. The graph keeps one
+edge, while both decisions and both proposal events remain inspectable. Failed
+and skipped attempts remain records too.
+
+## 6. Run and inspect
 
 ```python
 import asyncio
@@ -157,50 +135,85 @@ async def main() -> None:
         graph,
         RunLimits(max_states=40),
     ).run()
-    hits = [n for n in graph.states() if problem.solved(n.state)]
+
+    hits = [node for node in graph.states() if problem.solved(node.state)]
     print(result.stop_reason, len(hits), "solutions")
-    if hits:
-        for step in hits[0].state.trace:
-            print(step)
+
+    for decision in graph.decisions(result.run_id):
+        if decision.tool_calls:
+            print(decision.role, decision.tool_calls)
+
     graph.close()
 
 
 asyncio.run(main())
 ```
 
-Swap the policy without changing the problem. `BestFirstPolicy` uses the
-scores written by an `Objective`; random search does not:
+While the runner is active, open another terminal:
+
+```bash
+yggdrisil inspect run.sqlite
+```
+
+The inspector follows the DAG as it grows. Select a state or edge to see linked
+evaluations, decisions, prompts, tool calls, model output, and proposal
+outcomes.
+
+## 7. Add evaluation or another policy
+
+Evaluation is explicit and independent of policy provenance:
+
+```python
+from yggdrisil import EvaluationResult, EvaluatorSuite
+
+
+class Distance:
+    name = "distance"
+    version = "1"
+    config = {"target": 24}
+
+    async def evaluate(self, state):
+        return EvaluationResult(metrics={"distance": problem.distance(state)})
+
+
+await EvaluatorSuite([Distance()]).evaluate_cached(graph, state_id)
+```
+
+Best-first policy receives the stored evaluation records alongside each node.
+It can use them or rank directly from state:
 
 ```python
 from yggdrisil import BestFirstPolicy, RandomPolicy
 from policy import llm_policy
 
 RandomPolicy(problem.sample_actions, n_proposals=2, seed=0)
-BestFirstPolicy(problem.sample_actions, n_proposals=2, seed=0)
+
+BestFirstPolicy(
+    problem.sample_actions,
+    lambda node, evaluations: -problem.distance(node.state),
+    n_proposals=2,
+    seed=0,
+)
+
 llm_policy("openai:gpt-4o-mini")
 ```
 
-While the runner is active, open another terminal:
+An optional `Objective` is separate: it tracks one scalar best value for the
+run and may stop when a goal is reached. It does not mutate state or create an
+evaluation record.
 
-```bash
-yggdrisil inspect runs/make24/graph.sqlite
-```
+## Why this shape
 
-The inspector follows new nodes and edges, and displays the tool trace stored
-on each selection.
-
-## 7. Why this shape
-
-| Application code | Runtime |
+| Application code | Runtime record |
 | --- | --- |
-| What a state *is* | Store it once per `state_key` |
-| What an action *does* | `apply`, hash, edge |
-| Tools that can fail | Unused; they belong to the policy |
-| `decorate` to keep the transcript | Called on the way into the graph |
-| Navigator / explorer | `NavigatorExplorerPolicy` loop only |
+| Domain position | `StateNode` |
+| Deterministic transition | canonical `Edge` |
+| Independent metrics | `EvaluationRecord` |
+| Agent or policy operation | `DecisionRecord` |
+| One attempted transition | `ProposalEvent` |
 
-DAG merge for this puzzle: from `[1, 2, 3, 4]`, `1+2` then `3+4` is the
-same node as the reverse, `[3, 7]`, with two parents.
+DAG merge for `[1, 2, 3, 4]`: `1+2` then `3+4` is the same final node as the
+reverse order.
 
 ```mermaid
 flowchart TD
@@ -218,14 +231,5 @@ One solution of `1, 3, 4, 6`:
 6 / (1/4) →  [24]
 ```
 
-The last node has `state.values == ("24",)`. `state.trace` is the
-explorer session that committed the last combine: every tool call on
-the parent pool, including misses.
-
-## Other domains
-
-Keep the same split:
-
-- **Problem** — identity, `apply`, optional `decorate`
-- **Tools** — probes whose results you cannot cheaply fake
-- **Policy** — ephemeral; `Proposal.metadata["trace"]` in, state out
+The last state is only `Pool(values=("24",))`. The explorer session that
+proposed its incoming action lives in the linked decision.

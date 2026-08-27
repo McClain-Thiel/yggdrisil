@@ -43,6 +43,9 @@ async def main() -> None:
     elif args.policy == "best-first":
         policy = BestFirstPolicy(
             lambda state, _rng: problem.legal_actions(state),
+            lambda node, _evaluations: (
+                -problem.distance(node.state) - len(node.state.values) + 1
+            ),
             n_proposals=2,
             seed=args.seed,
         )
@@ -73,7 +76,14 @@ async def main() -> None:
     print(f"solutions found: {len(hits)}")
     if hits:
         print(render_pool(hits[0].state, target=problem.target))
-        print(f"tool calls on this state: {len(hits[0].state.trace)}")
+        events = graph.proposal_events(state_id=hits[0].state_id)
+        decision_ids = {event.decision_id for event in events}
+        tool_calls = sum(
+            len(decision.tool_calls)
+            for decision in graph.decisions(result.run_id)
+            if decision.decision_id in decision_ids
+        )
+        print(f"tool calls in linked decisions: {tool_calls}")
     json_path = args.out.with_suffix(".json")
     graph.export_json(json_path)
     print(f"wrote {args.out} and {json_path}")

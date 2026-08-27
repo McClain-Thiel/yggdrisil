@@ -28,7 +28,14 @@ class GraphReader:
             raise ValueError("batch_size must be positive")
         self.batch_size = batch_size
 
-    def updates(self, *, state_after: int, edge_after: int) -> dict[str, Any]:
+    def updates(
+        self,
+        *,
+        state_after: int,
+        edge_after: int,
+        evaluation_after: int = 0,
+        decision_after: int = 0,
+    ) -> dict[str, Any]:
         with self._connect() as connection:
             states = connection.execute(
                 """
@@ -52,6 +59,43 @@ class GraphReader:
                 """,
                 (edge_after, self.batch_size + 1),
             ).fetchall()
+            evaluations = connection.execute(
+                """
+                SELECT rowid AS cursor, evaluation_id, evaluator_id, state_id,
+                       evaluator, version, config_hash, metrics_json,
+                       metadata_json, created_at
+                FROM evaluations
+                WHERE rowid > ?
+                ORDER BY rowid
+                LIMIT ?
+                """,
+                (evaluation_after, self.batch_size + 1),
+            ).fetchall()
+            decisions = connection.execute(
+                """
+                SELECT rowid AS cursor, decision_id, run_id, policy, role, model,
+                       selected_state_ids_json, input_context_json,
+                       tool_calls_json, output_json, metadata_json,
+                       created_at, created_step
+                FROM decisions
+                WHERE rowid > ?
+                ORDER BY rowid
+                LIMIT ?
+                """,
+                (decision_after, self.batch_size + 1),
+            ).fetchall()
+            # Proposal outcomes update in place, so a rowid cursor would miss
+            # pending -> terminal changes. Keep this table as a full snapshot.
+            events = connection.execute(
+                """
+                SELECT rowid AS cursor, event_id, decision_id, run_id,
+                       parent_id, child_id, edge_id, action_json, metadata_json,
+                       outcome, error, created_at, created_step, proposal_index,
+                       sequence_index
+                FROM proposal_events
+                ORDER BY rowid
+                """
+            ).fetchall()
             counts = connection.execute(
                 """
                 SELECT
@@ -65,17 +109,37 @@ class GraphReader:
 
         state_pending = len(states) > self.batch_size
         edge_pending = len(edges) > self.batch_size
+        evaluation_pending = len(evaluations) > self.batch_size
+        decision_pending = len(decisions) > self.batch_size
         states = states[: self.batch_size]
         edges = edges[: self.batch_size]
+        evaluations = evaluations[: self.batch_size]
+        decisions = decisions[: self.batch_size]
         return {
             "graph": str(self.path),
             "states": [self._state(row) for row in states],
             "edges": [self._edge(row) for row in edges],
+            "evaluations": [self._evaluation(row) for row in evaluations],
+            "decisions": [self._decision(row) for row in decisions],
+            "proposal_events": [self._proposal_event(row) for row in events],
             "state_cursor": states[-1]["cursor"] if states else state_after,
             "edge_cursor": edges[-1]["cursor"] if edges else edge_after,
+            "evaluation_cursor": (
+                evaluations[-1]["cursor"] if evaluations else evaluation_after
+            ),
+            "decision_cursor": (
+                decisions[-1]["cursor"] if decisions else decision_after
+            ),
             "counts": {"states": counts["states"], "edges": counts["edges"]},
             "run": self._run(run) if run is not None else None,
-            "pending": state_pending or edge_pending,
+            "pending": any(
+                (
+                    state_pending,
+                    edge_pending,
+                    evaluation_pending,
+                    decision_pending,
+                )
+            ),
         }
 
     def _connect(self) -> sqlite3.Connection:
@@ -107,6 +171,59 @@ class GraphReader:
             "metadata": json.loads(row["metadata_json"]),
             "created_at": row["created_at"],
             "created_step": row["created_step"],
+        }
+
+    @staticmethod
+    def _evaluation(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "cursor": row["cursor"],
+            "evaluation_id": row["evaluation_id"],
+            "evaluator_id": row["evaluator_id"],
+            "state_id": row["state_id"],
+            "evaluator": row["evaluator"],
+            "version": row["version"],
+            "config_hash": row["config_hash"],
+            "metrics": json.loads(row["metrics_json"]),
+            "metadata": json.loads(row["metadata_json"]),
+            "created_at": row["created_at"],
+        }
+
+    @staticmethod
+    def _decision(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "cursor": row["cursor"],
+            "decision_id": row["decision_id"],
+            "run_id": row["run_id"],
+            "policy": row["policy"],
+            "role": row["role"],
+            "model": row["model"],
+            "selected_state_ids": json.loads(row["selected_state_ids_json"]),
+            "input_context": json.loads(row["input_context_json"]),
+            "tool_calls": json.loads(row["tool_calls_json"]),
+            "output": json.loads(row["output_json"]),
+            "metadata": json.loads(row["metadata_json"]),
+            "created_at": row["created_at"],
+            "created_step": row["created_step"],
+        }
+
+    @staticmethod
+    def _proposal_event(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "cursor": row["cursor"],
+            "event_id": row["event_id"],
+            "decision_id": row["decision_id"],
+            "run_id": row["run_id"],
+            "parent_id": row["parent_id"],
+            "child_id": row["child_id"],
+            "edge_id": row["edge_id"],
+            "action": json.loads(row["action_json"]),
+            "metadata": json.loads(row["metadata_json"]),
+            "outcome": row["outcome"],
+            "error": row["error"],
+            "created_at": row["created_at"],
+            "created_step": row["created_step"],
+            "proposal_index": row["proposal_index"],
+            "sequence_index": row["sequence_index"],
         }
 
     @staticmethod
@@ -157,9 +274,13 @@ class ViewerHandler(BaseHTTPRequestHandler):
         try:
             state_after = _cursor(query, "state_after")
             edge_after = _cursor(query, "edge_after")
+            evaluation_after = _cursor(query, "evaluation_after")
+            decision_after = _cursor(query, "decision_after")
             payload = self.server.reader.updates(
                 state_after=state_after,
                 edge_after=edge_after,
+                evaluation_after=evaluation_after,
+                decision_after=decision_after,
             )
         except (ValueError, sqlite3.Error) as exc:
             self._json(

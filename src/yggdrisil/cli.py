@@ -12,7 +12,11 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     inspect = commands.add_parser("inspect", help="inspect a search DAG")
     inspect.add_argument("graph", help="path to a Yggdrisil SQLite graph")
-    inspect.add_argument("--host", default="127.0.0.1")
+    inspect.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind host (default: 127.0.0.1; the inspector has no authentication)",
+    )
     inspect.add_argument("--port", type=int, default=8765)
     inspect.add_argument("--no-open", action="store_true")
 

@@ -6,7 +6,7 @@ from typing import Generic, TypeVar
 
 from yggdrisil.graph.base import ReadOnlyStateGraph
 from yggdrisil.limits import RunStatus
-from yggdrisil.policy import Proposal
+from yggdrisil.policy import Decision, Proposal
 from yggdrisil.types import StateNode
 
 State = TypeVar("State")
@@ -26,32 +26,51 @@ class RandomPolicy(Generic[State, Action]):
         seed: int | None = None,
         frontier_only: bool = False,
     ) -> None:
+        if n_proposals < 0:
+            raise ValueError("n_proposals must be non-negative")
         self.sample_actions = sample_actions
         self.n_proposals = n_proposals
         self.frontier_only = frontier_only
+        self._seed = seed
         self._rng = random.Random(seed)
 
     async def step(
         self,
         graph: ReadOnlyStateGraph[State, Action],
         status: RunStatus,
-    ) -> list[Proposal[Action]]:
-        del status
+    ) -> list[Decision[Action]]:
+        rng = self._rng_for_step(status)
         nodes = graph.frontier() if self.frontier_only else graph.states()
         if not nodes:
             return []
         proposals: list[Proposal[Action]] = []
         for _ in range(self.n_proposals):
-            parent = self._pick(nodes)
-            actions = list(self.sample_actions(parent.state, self._rng))
+            parent = self._pick(nodes, rng)
+            actions = list(self.sample_actions(parent.state, rng))
             if not actions:
                 continue
-            action = (
-                actions[0] if len(actions) == 1 else self._rng.choice(list(actions))
-            )
+            action = actions[0] if len(actions) == 1 else rng.choice(list(actions))
             proposals.append(Proposal(parent_id=parent.state_id, action=action))
-        return proposals
+        if not proposals:
+            return []
+        selected = list(dict.fromkeys(proposal.parent_id for proposal in proposals))
+        return [
+            Decision(
+                role="policy",
+                proposals=proposals,
+                selected_state_ids=selected,
+            )
+        ]
 
-    def _pick(self, nodes: Sequence[StateNode[State]]) -> StateNode[State]:
+    def _rng_for_step(self, status: RunStatus) -> random.Random:
+        if self._seed is None:
+            return self._rng
+        return random.Random(f"{self._seed}:{status.step}")
+
+    def _pick(
+        self,
+        nodes: Sequence[StateNode[State]],
+        rng: random.Random,
+    ) -> StateNode[State]:
         ordered = sorted(nodes, key=lambda n: n.state_id)
-        return ordered[self._rng.randrange(len(ordered))]
+        return ordered[rng.randrange(len(ordered))]

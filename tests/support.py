@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from yggdrisil.policy import Decision
+
 
 @dataclass
 class ScriptedPolicy:
@@ -15,4 +17,14 @@ class ScriptedPolicy:
             return []
         batch = self.batches[self._i]
         self._i += 1
-        return batch
+        if not batch:
+            return []
+        return [
+            Decision(
+                role="scripted",
+                proposals=batch,
+                selected_state_ids=list(
+                    dict.fromkeys(proposal.parent_id for proposal in batch)
+                ),
+            )
+        ]

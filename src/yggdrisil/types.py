@@ -7,6 +7,7 @@ from yggdrisil.limits import RunLimits
 
 State = TypeVar("State")
 Action = TypeVar("Action")
+MetricValue = float | int | bool | str | None
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,53 @@ class Edge(Generic[Action]):
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
     created_step: int = 0
+
+
+@dataclass(frozen=True)
+class EvaluationRecord:
+    evaluation_id: str
+    evaluator_id: str
+    state_id: str
+    evaluator: str
+    version: str
+    config_hash: str
+    metrics: dict[str, MetricValue]
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class DecisionRecord:
+    decision_id: str
+    run_id: str
+    policy: str
+    role: str
+    model: str | None
+    selected_state_ids: list[str]
+    input_context: Any = None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    output: Any = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = ""
+    created_step: int = 0
+
+
+@dataclass(frozen=True)
+class ProposalEvent(Generic[Action]):
+    event_id: str
+    decision_id: str
+    run_id: str
+    parent_id: str
+    action: Action
+    outcome: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    child_id: str | None = None
+    edge_id: str | None = None
+    error: str | None = None
+    created_at: str = ""
+    created_step: int = 0
+    proposal_index: int = 0
+    sequence_index: int = 0
 
 
 @dataclass(frozen=True)

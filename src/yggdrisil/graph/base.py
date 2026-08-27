@@ -4,7 +4,14 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar
 
-from yggdrisil.types import Edge, StateNode
+from yggdrisil.evaluation import EvaluationResult
+from yggdrisil.types import (
+    DecisionRecord,
+    Edge,
+    EvaluationRecord,
+    ProposalEvent,
+    StateNode,
+)
 
 State = TypeVar("State")
 Action = TypeVar("Action")
@@ -33,6 +40,25 @@ class ReadOnlyStateGraph(Protocol[State, Action]):
     ) -> list[StateNode[State]]: ...
 
     def edges(self) -> list[Edge[Action]]: ...
+
+    def evaluations(self, state_id: str) -> list[EvaluationRecord]: ...
+
+    def decisions(
+        self,
+        run_id: str | None = None,
+        limit: int | None = None,
+        *,
+        newest: bool = False,
+    ) -> list[DecisionRecord]: ...
+
+    def proposal_events(
+        self,
+        *,
+        run_id: str | None = None,
+        decision_id: str | None = None,
+        state_id: str | None = None,
+        edge_id: str | None = None,
+    ) -> list[ProposalEvent[Action]]: ...
 
     def __len__(self) -> int: ...
 
@@ -92,6 +118,47 @@ class StateGraph(ABC, Generic[State, Action]):
 
     @abstractmethod
     def edges(self) -> list[Edge[Action]]: ...
+
+    @abstractmethod
+    def add_evaluation(
+        self,
+        state_id: str,
+        *,
+        evaluator_id: str,
+        evaluator: str,
+        version: str,
+        config_hash: str,
+        result: EvaluationResult,
+    ) -> EvaluationRecord: ...
+
+    @abstractmethod
+    def get_evaluation(
+        self,
+        state_id: str,
+        evaluator_id: str,
+    ) -> EvaluationRecord | None: ...
+
+    @abstractmethod
+    def evaluations(self, state_id: str) -> list[EvaluationRecord]: ...
+
+    @abstractmethod
+    def decisions(
+        self,
+        run_id: str | None = None,
+        limit: int | None = None,
+        *,
+        newest: bool = False,
+    ) -> list[DecisionRecord]: ...
+
+    @abstractmethod
+    def proposal_events(
+        self,
+        *,
+        run_id: str | None = None,
+        decision_id: str | None = None,
+        state_id: str | None = None,
+        edge_id: str | None = None,
+    ) -> list[ProposalEvent[Action]]: ...
 
     @abstractmethod
     def __len__(self) -> int: ...
@@ -163,6 +230,33 @@ class ReadOnlyGraph(Generic[State, Action]):
 
     def edges(self) -> list[Edge[Action]]:
         return self._graph.edges()
+
+    def evaluations(self, state_id: str) -> list[EvaluationRecord]:
+        return self._graph.evaluations(state_id)
+
+    def decisions(
+        self,
+        run_id: str | None = None,
+        limit: int | None = None,
+        *,
+        newest: bool = False,
+    ) -> list[DecisionRecord]:
+        return self._graph.decisions(run_id, limit, newest=newest)
+
+    def proposal_events(
+        self,
+        *,
+        run_id: str | None = None,
+        decision_id: str | None = None,
+        state_id: str | None = None,
+        edge_id: str | None = None,
+    ) -> list[ProposalEvent[Action]]:
+        return self._graph.proposal_events(
+            run_id=run_id,
+            decision_id=decision_id,
+            state_id=state_id,
+            edge_id=edge_id,
+        )
 
     def __len__(self) -> int:
         return len(self._graph)

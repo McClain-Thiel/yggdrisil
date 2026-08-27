@@ -33,7 +33,8 @@ class TinyMake24LM:
 
     It probes the current pool with add/subtract/multiply/divide, ranks
     first steps by whether a short lookahead still hits the target, and
-    returns those Combine actions plus the tool trace.
+    returns those Combine actions. The framework records its tool trace on the
+    resulting decision.
     """
 
     def __init__(
@@ -168,10 +169,6 @@ def format_make24_prompt(context) -> str:
         "Combine(left, right, op) for the one-step combinations to commit.",
         f"Navigator guidance: {context.guidance or '(none)'}",
     ]
-    if pool.trace:
-        lines.append("TRACE ALREADY ON THIS STATE:")
-        for step in pool.trace[-8:]:
-            lines.append(f"  {step}")
     return "\n".join(lines)
 
 
@@ -179,6 +176,14 @@ class _ToolBoundExplorer:
     def __init__(self, inner: Any, target: int) -> None:
         self._inner = inner
         self._target = target
+
+    @property
+    def model(self) -> str | None:
+        model = getattr(self._inner, "model", None)
+        return model if isinstance(model, str) else None
+
+    def format_prompt(self, context) -> str:
+        return self._inner.format_prompt(context)
 
     async def explore(self, context) -> ExplorerResult[Combine]:
         kit = ArithmeticTools(context.state, target=self._target)

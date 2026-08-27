@@ -7,7 +7,7 @@ edit_uri: edit/main/docs/
 copyright: Yggdrisil is a search substrate, not an agent framework.
 
 nav:
-  - Home: index.md
+  - Overview: index.md
   - Guide:
       - Getting started: getting-started.md
       - Build a search: tutorial.md
@@ -21,20 +21,20 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: teal
-      accent: light-green
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: teal
-      accent: light-green
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Light mode
   font:
-    text: Source Serif 4
+    text: IBM Plex Sans
     code: IBM Plex Mono
   features:
     - navigation.instant

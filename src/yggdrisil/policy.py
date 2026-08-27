@@ -16,6 +16,20 @@ class Proposal(Generic[Action]):
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class Decision(Generic[Action]):
+    """One policy operation and the transitions it proposed."""
+
+    role: str
+    proposals: list[Proposal[Action]] = field(default_factory=list)
+    selected_state_ids: list[str] = field(default_factory=list)
+    model: str | None = None
+    input_context: Any = None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    output: Any = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 class Policy(Protocol[Action]):
     """Decides where to search. Must not mutate the graph."""
 
@@ -23,4 +37,4 @@ class Policy(Protocol[Action]):
         self,
         graph: ReadOnlyStateGraph[Any, Action],
         status: RunStatus,
-    ) -> list[Proposal[Action]]: ...
+    ) -> list[Decision[Action]]: ...

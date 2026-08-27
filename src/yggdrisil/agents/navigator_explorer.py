@@ -6,9 +6,9 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from yggdrisil.graph.base import ReadOnlyStateGraph
 from yggdrisil.limits import RunStatus
-from yggdrisil.policy import Proposal
+from yggdrisil.policy import Decision, Proposal
 from yggdrisil.serialize import dumps
-from yggdrisil.types import StateNode
+from yggdrisil.types import EvaluationRecord, StateNode
 
 State = TypeVar("State")
 Action = TypeVar("Action")
@@ -50,6 +50,7 @@ class ExplorerContext(Generic[State]):
     state: State
     lineage: list[StateNode[State]]
     guidance: str | None
+    evaluations: list[EvaluationRecord] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -89,31 +90,60 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         self,
         graph: ReadOnlyStateGraph[State, Action],
         status: RunStatus,
-    ) -> list[Proposal[Action]]:
-        plan = await self.navigator.plan(self._navigator_context(graph, status))
+    ) -> list[Decision[Action]]:
+        navigator_context = self._navigator_context(graph, status)
+        plan = await self.navigator.plan(navigator_context)
         requests = plan.requests[: self.max_requests]
+        decisions: list[Decision[Action]] = [
+            Decision(
+                role="navigator",
+                selected_state_ids=[request.state_id for request in requests],
+                model=_model_name(self.navigator),
+                input_context=_input_context(
+                    self.navigator,
+                    navigator_context,
+                    format_navigator_prompt,
+                ),
+                output={
+                    "requests": [
+                        {
+                            "state_id": request.state_id,
+                            "guidance": request.guidance,
+                        }
+                        for request in requests
+                    ]
+                },
+            )
+        ]
         if not requests:
-            return []
+            return decisions
         contexts = [self._explorer_context(graph, request) for request in requests]
         results = await asyncio.gather(
             *[self.explorer.explore(ctx) for ctx in contexts]
         )
-        proposals: list[Proposal[Action]] = []
-        for request, result in zip(requests, results, strict=True):
-            for action in result.actions:
-                metadata: dict[str, Any] = {"created_by": "explorer"}
-                if result.note:
-                    metadata["note"] = result.note
-                if result.trace:
-                    metadata["trace"] = list(result.trace)
-                proposals.append(
-                    Proposal(
-                        parent_id=request.state_id,
-                        action=action,
-                        metadata=metadata,
-                    )
+        for request, context, result in zip(requests, contexts, results, strict=True):
+            proposals = [
+                Proposal(parent_id=request.state_id, action=action)
+                for action in result.actions
+            ]
+            metadata = {"note": result.note} if result.note else {}
+            decisions.append(
+                Decision(
+                    role="explorer",
+                    proposals=proposals,
+                    selected_state_ids=[request.state_id],
+                    model=_model_name(self.explorer),
+                    input_context=_input_context(
+                        self.explorer,
+                        context,
+                        format_explorer_prompt,
+                    ),
+                    tool_calls=list(result.trace),
+                    output={"actions": list(result.actions), "note": result.note},
+                    metadata=metadata,
                 )
-        return proposals
+            )
+        return decisions
 
     def _navigator_context(
         self,
@@ -122,10 +152,12 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
     ) -> NavigatorContext:
         recent_nodes = graph.states(limit=self.recent, newest=True)
         summaries: dict[str, str] = {}
-        for node in recent_nodes:
-            note = node.metadata.get("note") or node.metadata.get("agent_note")
+        recent_decisions = graph.decisions(limit=self.recent, newest=True)
+        for decision in reversed(recent_decisions):
+            note = decision.metadata.get("note")
             if isinstance(note, str) and note:
-                summaries[node.state_id] = note
+                for state_id in decision.selected_state_ids:
+                    summaries[state_id] = note
         return NavigatorContext(
             goal=self.goal,
             status=status,
@@ -136,7 +168,14 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
                 {
                     "state_id": n.state_id,
                     "created_step": n.created_step,
-                    "metadata": n.metadata,
+                    "evaluations": [
+                        {
+                            "evaluator": record.evaluator,
+                            "version": record.version,
+                            "metrics": record.metrics,
+                        }
+                        for record in graph.evaluations(n.state_id)
+                    ],
                 }
                 for n in recent_nodes
             ],
@@ -156,6 +195,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
             state=node.state,
             lineage=lineage,
             guidance=request.guidance,
+            evaluations=graph.evaluations(node.state_id),
             metadata=dict(node.metadata),
         )
 
@@ -215,8 +255,25 @@ def format_explorer_prompt(context: ExplorerContext[Any]) -> str:
             f"GOAL: {context.goal or '(unspecified)'}",
             f"CURRENT_STATE_ID: {context.state_id}",
             f"CURRENT_STATE: {dumps(context.state)}",
+            f"EVALUATIONS: {dumps([{'evaluator': record.evaluator, 'version': record.version, 'metrics': record.metrics} for record in context.evaluations])}",
             f"NAVIGATOR_GUIDANCE: {context.guidance or '(none)'}",
             f"SHORT_LINEAGE: {dumps(lineage)}",
             "Propose only direct children of the current state.",
         ]
     )
+
+
+def _model_name(component: object) -> str | None:
+    model = getattr(component, "model", None)
+    return model if isinstance(model, str) else None
+
+
+def _input_context(
+    component: object,
+    context: Any,
+    fallback: Any,
+) -> Any:
+    formatter = getattr(component, "format_prompt", None)
+    if callable(formatter):
+        return formatter(context)
+    return fallback(context)

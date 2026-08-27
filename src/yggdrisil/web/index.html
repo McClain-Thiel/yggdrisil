@@ -73,11 +73,12 @@
         <div class="inspector-heading">
           <span class="eyebrow" id="selection-kind">SELECTION</span>
           <h1 id="selection-title">Choose a node</h1>
-          <p id="selection-subtitle">State, metadata, actions, and agent traces appear here.</p>
+          <p id="selection-subtitle">State, evidence, decisions, and transitions appear here.</p>
         </div>
         <div class="tabs" role="tablist" aria-label="Inspector views">
           <button class="tab active" type="button" role="tab" aria-selected="true" data-tab="state">State</button>
-          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="trace">Trace <span id="trace-count">0</span></button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="evaluations">Eval <span id="evaluation-count">0</span></button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="decisions">Decisions <span id="decision-count">0</span></button>
           <button class="tab" type="button" role="tab" aria-selected="false" data-tab="links">Links <span id="link-count">0</span></button>
         </div>
         <div class="inspector-body">
@@ -88,8 +89,11 @@
             <h2>Metadata</h2>
             <pre id="state-metadata">{}</pre>
           </section>
-          <section id="panel-trace" class="tab-panel" role="tabpanel" hidden>
-            <div id="trace-list" class="trace-list"></div>
+          <section id="panel-evaluations" class="tab-panel" role="tabpanel" hidden>
+            <div id="evaluation-list" class="record-list"></div>
+          </section>
+          <section id="panel-decisions" class="tab-panel" role="tabpanel" hidden>
+            <div id="decision-list" class="record-list"></div>
           </section>
           <section id="panel-links" class="tab-panel" role="tabpanel" hidden>
             <div id="link-list" class="link-list"></div>

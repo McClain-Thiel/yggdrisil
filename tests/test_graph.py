@@ -36,7 +36,7 @@ def test_convergent_paths_share_a_node(tmp_path: Path) -> None:
 
     ids_12 = [problem.state_key(s) for s in via_12]
     ids_34 = [problem.state_key(s) for s in via_34]
-    for state, state_id in zip(via_12 + via_34[:-1], ids_12 + ids_34[:-1]):
+    for state, state_id in zip(via_12 + via_34[:-1], ids_12 + ids_34[:-1], strict=True):
         graph.add_state(state_id, state)
     graph.add_edge(start_id, ids_12[0], Combine("1", "2", "+"))
     graph.add_edge(ids_12[0], ids_12[1], Combine("3", "4", "+"))

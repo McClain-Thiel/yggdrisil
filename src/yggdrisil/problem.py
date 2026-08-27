@@ -9,8 +9,8 @@ Action = TypeVar("Action", contravariant=True)
 class Problem(Protocol[State, Action]):
     """Required state-space semantics.
 
-    ``validate_state``, ``validate_action``, and ``decorate`` are optional
-    runtime hooks rather than protocol requirements.
+    ``validate_state`` and ``validate_action`` are optional runtime hooks rather
+    than protocol requirements.
     """
 
     @property

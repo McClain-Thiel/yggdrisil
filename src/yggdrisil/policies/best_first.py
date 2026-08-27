@@ -6,12 +6,14 @@ from typing import Generic, TypeVar
 
 from yggdrisil.graph.base import ReadOnlyStateGraph
 from yggdrisil.limits import RunStatus
-from yggdrisil.policy import Proposal
+from yggdrisil.policy import Decision, Proposal
+from yggdrisil.types import EvaluationRecord, StateNode
 
 State = TypeVar("State")
 Action = TypeVar("Action")
 
 ActionSampler = Callable[[State, random.Random], Sequence[Action]]
+Priority = Callable[[StateNode[State], Sequence[EvaluationRecord]], float]
 
 
 class BestFirstPolicy(Generic[State, Action]):
@@ -20,6 +22,7 @@ class BestFirstPolicy(Generic[State, Action]):
     def __init__(
         self,
         sample_actions: ActionSampler[State, Action],
+        priority: Priority[State],
         *,
         n_proposals: int = 1,
         maximize: bool = True,
@@ -31,49 +34,64 @@ class BestFirstPolicy(Generic[State, Action]):
         if frontier_limit <= 0:
             raise ValueError("frontier_limit must be positive")
         self.sample_actions = sample_actions
+        self.priority = priority
         self.n_proposals = n_proposals
         self.maximize = maximize
         self.frontier_limit = frontier_limit
+        self._seed = seed
         self._rng = random.Random(seed)
 
     async def step(
         self,
         graph: ReadOnlyStateGraph[State, Action],
         status: RunStatus,
-    ) -> list[Proposal[Action]]:
-        del status
+    ) -> list[Decision[Action]]:
         if self.n_proposals == 0:
             return []
+        rng = self._rng_for_step(status)
         nodes = graph.frontier(limit=self.frontier_limit)
-        scored = [node for node in nodes if _score(node.metadata) is not None]
-        if nodes and not scored:
-            raise ValueError(
-                "BestFirstPolicy requires Runner(..., objective=Objective(...))"
-            )
+        scored = [
+            (self.priority(node, graph.evaluations(node.state_id)), node)
+            for node in nodes
+        ]
         scored.sort(
-            key=lambda node: (_score(node.metadata), node.state_id),
+            key=lambda item: (item[0], item[1].state_id),
             reverse=self.maximize,
         )
 
         proposals: list[Proposal[Action]] = []
-        for node in scored:
-            actions = list(self.sample_actions(node.state, self._rng))
-            self._rng.shuffle(actions)
+        selected: list[str] = []
+        for _, node in scored:
+            actions = list(self.sample_actions(node.state, rng))
+            rng.shuffle(actions)
             for action in actions:
+                if node.state_id not in selected:
+                    selected.append(node.state_id)
                 proposals.append(
                     Proposal(
                         parent_id=node.state_id,
                         action=action,
-                        metadata={"policy": "best_first"},
                     )
                 )
                 if len(proposals) >= self.n_proposals:
-                    return proposals
-        return proposals
+                    return [
+                        Decision(
+                            role="policy",
+                            proposals=proposals,
+                            selected_state_ids=selected,
+                        )
+                    ]
+        if not proposals:
+            return []
+        return [
+            Decision(
+                role="policy",
+                proposals=proposals,
+                selected_state_ids=selected,
+            )
+        ]
 
-
-def _score(metadata: dict[str, object]) -> float | None:
-    score = metadata.get("score")
-    if isinstance(score, (int, float)):
-        return float(score)
-    return None
+    def _rng_for_step(self, status: RunStatus) -> random.Random:
+        if self._seed is None:
+            return self._rng
+        return random.Random(f"{self._seed}:{status.step}")

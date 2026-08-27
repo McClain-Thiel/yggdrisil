@@ -5,33 +5,30 @@ Yggdrisil requires **Python 3.11** or newer.
 ## Install
 
 ```bash
-pip install yggdrisil
+pip install "yggdrisil @ git+https://github.com/McClain-Thiel/yggdrisil.git"
 ```
 
-Language-model policies need PydanticAI:
+Language-model policies need the optional PydanticAI adapters:
 
 ```bash
-pip install "yggdrisil[agents]"
+pip install "yggdrisil[agents] @ git+https://github.com/McClain-Thiel/yggdrisil.git"
 ```
 
-That extra does not change the runner. It only adds adapters to call a
-model. Provider credentials (for example `OPENAI_API_KEY`) come from
-your environment, not from Yggdrisil.
+The package is not on PyPI yet. Provider credentials come from your
+environment, not from Yggdrisil.
 
-## What you install
+## What you provide
 
-The package is a search runtime: a problem protocol, a policy protocol,
-a persistent DAG, and a runner that applies proposals under hard
-limits. It does not include a domain. You write:
+The package supplies a runner, SQLite DAG, policy interfaces, evaluation
+records, limits, exports, and a local inspector. Application code supplies:
 
-- a **problem** — registered state/action types, `state_key`, `apply`, and optionally
-  `decorate` so agent traces live on the state object
-- **tools** — probes the policy may call; they can fail
-- a **policy** — returns `Proposal`s; it must not write the graph
+- a **problem** — registered state/action types, `state_key`, and `apply`
+- optional **evaluators** — independent measurements of a state
+- a **policy** — returns `Decision`s containing proposed transitions
+- optional **tools** — probes used by a policy or agent
 
-Those three pieces are [built in the next page](tutorial.md). Once they
-exist as modules in your project (`problem.py`, `tools.py`,
-`policy.py`), a run looks like this:
+The complete Make-24 example is [built on the next page](tutorial.md). Once the
+problem and policy exist, a run is small:
 
 ```python
 import asyncio
@@ -51,10 +48,12 @@ async def main() -> None:
         graph,
         RunLimits(max_states=40),
     ).run()
+
     print(result.stop_reason, result.unique_states, result.edges)
-    for node in graph.states():
-        if problem.solved(node.state):
-            print(node.state.values, len(node.state.trace), "tool calls")
+    for decision in graph.decisions(result.run_id):
+        if decision.tool_calls:
+            print(decision.role, len(decision.tool_calls), "tool calls")
+
     graph.export_json("run.json")
     graph.close()
 
@@ -62,15 +61,22 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-The same problem and limits work with a random baseline or a real
-model. Only the policy object changes:
+The same problem and limits work with several policies. Best-first ranking is
+explicit and may use the state, its stored evaluations, or both:
 
 ```python
 from yggdrisil import BestFirstPolicy, RandomPolicy
 from policy import llm_policy
 
 RandomPolicy(problem.sample_actions, n_proposals=2, seed=0)
-BestFirstPolicy(problem.sample_actions, n_proposals=2, seed=0)
+
+BestFirstPolicy(
+    problem.sample_actions,
+    lambda node, evaluations: -problem.distance(node.state),
+    n_proposals=2,
+    seed=0,
+)
+
 llm_policy("openai:gpt-4o-mini")
 ```
 
@@ -79,7 +85,9 @@ loading a graph from importing modules named by the database:
 
 ```python
 from dataclasses import dataclass
+
 from yggdrisil import serializable
+
 
 @serializable
 @dataclass(frozen=True)
@@ -87,36 +95,58 @@ class State:
     value: float
 ```
 
-## Runtime imports
+## Evaluations
+
+An evaluator returns metrics plus optional structured metadata. A suite is only
+an ordered list; evaluation remains explicit rather than being hidden inside
+the runner.
 
 ```python
-from yggdrisil import (
-    BestFirstPolicy,
-    Objective,
-    RandomPolicy,
-    Runner,
-    RunLimits,
-    SQLiteStateGraph,
-)
-from yggdrisil.agents import NavigatorExplorerPolicy
+from yggdrisil import EvaluationResult, EvaluatorSuite
+
+
+class Distance:
+    name = "distance"
+    version = "1"
+    config = {"target": 24}
+
+    async def evaluate(self, state):
+        return EvaluationResult(metrics={"distance": problem.distance(state)})
+
+
+records = await EvaluatorSuite([Distance()]).evaluate_cached(graph, state_id)
+print(records[0].metrics["distance"])
 ```
 
-Everything else — number pools, arithmetic tools, navigator and
-explorer roles — is application code.
+The cache key is `(state_id, evaluator name, version, config)`. Change a version
+or configuration to produce a distinct evaluation record.
 
 ## Persistence and limits
 
-`SQLiteStateGraph("run.sqlite")` is the durable store. Reopening the
-same file resumes the last run. `:memory:` is valid for tests.
-Use one file per problem configuration. The runner fingerprints the problem
-type, initial state, and public instance configuration and rejects a mismatch.
-For configuration objects that are not serializable, expose a
-`problem_fingerprint` attribute or zero-argument method returning serializable
-identity data.
+`SQLiteStateGraph("run.sqlite")` is the durable store. Reopening the same file
+resumes the requested or latest run. `:memory:` is useful for tests. Use one
+file per problem configuration; the runner fingerprints the problem and
+rejects a mismatch before mutation.
 
-The tagged storage format was replaced before the 0.1 release. Experimental
-graphs written by earlier repository revisions fail with an explicit migration
-error; rebuild them rather than loading class names from an untrusted database.
+The SQLite database is the resume checkpoint. States, edges, decisions, and
+proposal events are committed as they are written; the run step and metadata
+are checkpointed after every completed proposal batch. On reopen, the runner
+first reconciles an interrupted batch:
+
+- a pending proposal is applied again safely against the deduplicated DAG
+- proposal order and edge metadata are preserved during replay
+- a finalized batch whose step was not saved advances the checkpoint
+- an identical decision that previously failed is recorded as a new attempt
+- stored run metadata is preserved and merged with new metadata
+
+Pass `run_id="..."` to resume a particular run. With no id, `resume=True`
+selects the latest run in the file. Use `resume=False` for a new run; an
+existing explicit id is rejected rather than overwritten.
+
+Custom policy object state is not serialized. Resumable policies should derive
+their context from the graph and `RunStatus`, as the agent policies do. Seeded
+`RandomPolicy` and `BestFirstPolicy` derive randomness from the saved step, so
+reopening them with the same seed matches an uninterrupted run.
 
 [`RunLimits`][yggdrisil.limits.RunLimits] are hard stops:
 
@@ -124,18 +154,18 @@ error; rebuild them rather than loading class names from an untrusted database.
 - `max_steps` — policy calls
 - `max_wall_time_s` — wall clock
 
-Pass an optional `Objective(score=..., goal_reached=...)` to the runner. Scores
-are stored in node metadata, the best state is recorded on `RunResult`, and a
-goal can stop the run. `BestFirstPolicy` expands the highest-scored frontier
-state. Omit the objective if the policy owns all ranking and stopping logic.
+An optional `Objective(score=..., goal_reached=...)` tracks `best_state_id` and
+`best_score` on the run and may stop it. Objective scores are run logic, so they
+are not copied into states or evaluation records.
 
-After a run, inspect `node.state` (including any trace you stamped with
-`decorate`) and export with `graph.export_json` or `graph.export_graphml`.
-The bundled inspector can follow the graph while it runs:
+## Inspect while running
 
 ```bash
 yggdrisil inspect run.sqlite
 ```
 
-It opens a local, read-only web view of nodes, transitions, scores, metadata,
-and traces. Use `--no-open` on a remote machine.
+The local read-only inspector follows new rows while the run is active. It
+shows the DAG, state/action payloads, evaluations, decisions, tool calls, and
+proposal outcomes. Use `--no-open` on a remote machine. The inspector has no
+authentication; keep the default loopback binding or put it behind an SSH
+tunnel rather than exposing it directly.

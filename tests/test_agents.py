@@ -58,14 +58,16 @@ async def test_explorer_only_proposes_direct_children(tmp_path: Path) -> None:
         elapsed_s=0.0,
         limits=RunLimits(max_steps=1),
     )
-    proposals = await policy.step(graph.readonly(), status)
-    assert {p.parent_id for p in proposals} == {start_id}
-    assert [p.action for p in proposals] == [
+    decisions = await policy.step(graph.readonly(), status)
+    assert [decision.role for decision in decisions] == ["navigator", "explorer"]
+    proposals = decisions[1].proposals
+    assert {proposal.parent_id for proposal in proposals} == {start_id}
+    assert [proposal.action for proposal in proposals] == [
         Combine("1", "3", "+"),
         Combine("4", "6", "*"),
     ]
     assert explorer.calls == 1
-    assert proposals[0].metadata["trace"][0]["tool"] == "add"
+    assert decisions[1].tool_calls[0]["tool"] == "add"
 
 
 @pytest.mark.asyncio
@@ -78,12 +80,14 @@ async def test_agent_policy_with_runner(tmp_path: Path) -> None:
     result = await Runner(problem, policy, graph, RunLimits(max_steps=1)).run()
     assert result.unique_states == 3
     assert result.edges == 2
-    for edge in graph.edges():
-        assert edge.metadata.get("note") == "try these"
-        assert edge.metadata.get("trace")
-    children = [n for n in graph.states() if n.state_id != start_id]
-    assert all(n.state.trace for n in children)
-    assert all(n.metadata.get("trace") for n in children)
+    decisions = graph.decisions(result.run_id)
+    explorer_decisions = [d for d in decisions if d.role == "explorer"]
+    assert explorer_decisions[0].metadata["note"] == "try these"
+    assert explorer_decisions[0].tool_calls[0]["tool"] == "add"
+    events = graph.proposal_events(decision_id=explorer_decisions[0].decision_id)
+    assert len(events) == 2
+    assert {event.outcome for event in events} == {"created"}
+    assert all(event.edge_id for event in events)
 
 
 @pytest.mark.asyncio
@@ -104,7 +108,15 @@ async def test_tiny_lm_plays_with_tools_and_can_hit_24(tmp_path: Path) -> None:
         problem.validate_action(parent.state, edge.action)
     hits = [n for n in graph.states() if problem.solved(n.state)]
     assert hits, "tiny LM should reach 24 in a short search"
-    traced = [n for n in graph.states() if n.state.trace]
-    assert traced, "explorer tool traces should land on node.state"
-    tools = {step.get("tool") for n in traced for step in n.state.trace}
+    explorer_decisions = [
+        decision
+        for decision in graph.decisions(result.run_id)
+        if decision.role == "explorer"
+    ]
+    assert explorer_decisions, "explorer decisions should be persisted"
+    tools = {
+        step.get("tool")
+        for decision in explorer_decisions
+        for step in decision.tool_calls
+    }
     assert tools & {"add", "subtract", "multiply", "divide"}

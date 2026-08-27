@@ -52,3 +52,52 @@ async def test_random_policy_cannot_mutate_graph(tmp_path: Path) -> None:
     await policy.step(view, status)
     assert not hasattr(view, "add_state")
     assert len(graph) == 1
+
+
+@pytest.mark.asyncio
+async def test_seeded_random_policy_matches_uninterrupted_run_after_resume(
+    tmp_path: Path,
+) -> None:
+    problem = Make24()
+    uninterrupted = SQLiteStateGraph(tmp_path / "uninterrupted.sqlite")
+    await Runner(
+        problem,
+        RandomPolicy(problem.sample_actions, n_proposals=2, seed=11),
+        uninterrupted,
+        RunLimits(max_steps=4),
+        run_id="full",
+    ).run()
+
+    path = tmp_path / "resumed.sqlite"
+    resumed = SQLiteStateGraph(path)
+    await Runner(
+        problem,
+        RandomPolicy(problem.sample_actions, n_proposals=2, seed=11),
+        resumed,
+        RunLimits(max_steps=2),
+        run_id="resume",
+    ).run()
+    resumed.close()
+
+    resumed = SQLiteStateGraph(path)
+    await Runner(
+        problem,
+        RandomPolicy(problem.sample_actions, n_proposals=2, seed=11),
+        resumed,
+        RunLimits(max_steps=4),
+        run_id="resume",
+    ).run()
+
+    assert {node.state_id for node in resumed.states()} == {
+        node.state_id for node in uninterrupted.states()
+    }
+    assert {
+        (edge.parent_id, edge.child_id, edge.action) for edge in resumed.edges()
+    } == {
+        (edge.parent_id, edge.child_id, edge.action) for edge in uninterrupted.edges()
+    }
+
+
+def test_random_policy_rejects_negative_proposal_count() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        RandomPolicy(lambda state, rng: [], n_proposals=-1)
