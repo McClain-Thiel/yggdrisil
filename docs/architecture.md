@@ -86,6 +86,26 @@ you provide. [`BestFirstPolicy`][yggdrisil.policies.best_first.BestFirstPolicy]
 takes an explicit priority callable over a node and its evaluations.
 [`NavigatorExplorerPolicy`][yggdrisil.agents.navigator_explorer.NavigatorExplorerPolicy]
 records navigator and explorer calls separately, with no hidden chat history.
+It can also accept an application-owned
+[`ExplorationRequestSelector`][yggdrisil.agents.navigator_explorer.ExplorationRequestSelector]
+for deterministic scheduling. The selector receives the read-only graph and a
+run-aware [`RunStatus`][yggdrisil.limits.RunStatus], so it can reconstruct an
+open set from decisions and proposal events for that run. Unlike `frontier()`,
+such a selector may deliberately reopen a non-leaf state. Selection and empty
+exploration decisions still use the normal durable decision records.
+If a navigator, selector, or explorer raises, the policy attaches the completed
+and failed attempt decisions to a
+[`PolicyStepError`][yggdrisil.policy.PolicyStepError]. The runner stores those
+records before preserving the original exception and failed-run behavior.
+Wall-time cancellation follows the same provenance rule through
+[`InterruptedDecisionProvider`][yggdrisil.policy.InterruptedDecisionProvider]:
+the completed selection and interrupted explorer attempts are checkpointed,
+then the run completes with `max_wall_time_s` as before.
+When a deterministic selector chose requests but every explorer returns no
+actions, the policy marks that decision-only step `continue_on_empty`. The
+runner checkpoints it and asks the policy for another step. A selector
+returning no requests leaves the flag unset and remains the explicit
+exhausted-search signal. The existing LLM navigator behavior is unchanged.
 
 ## Edges and proposal events
 

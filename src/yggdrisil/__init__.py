@@ -19,7 +19,13 @@ from yggdrisil.graph import ReadOnlyStateGraph, SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
 from yggdrisil.objective import Objective
 from yggdrisil.policies import BestFirstPolicy, RandomPolicy
-from yggdrisil.policy import Decision, Policy, Proposal
+from yggdrisil.policy import (
+    Decision,
+    InterruptedDecisionProvider,
+    Policy,
+    PolicyStepError,
+    Proposal,
+)
 from yggdrisil.runner import Runner
 from yggdrisil.serialize import serializable, stable_hash
 from yggdrisil.types import (
@@ -42,9 +48,11 @@ __all__ = [
     "Evaluator",
     "EvaluatorSuite",
     "GraphError",
+    "InterruptedDecisionProvider",
     "NavigatorExplorerPolicy",
     "Objective",
     "Policy",
+    "PolicyStepError",
     "Proposal",
     "ProposalEvent",
     "RandomPolicy",

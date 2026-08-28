@@ -6,7 +6,7 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from yggdrisil.graph.base import ReadOnlyStateGraph
 from yggdrisil.limits import RunStatus
-from yggdrisil.policy import Decision, Proposal
+from yggdrisil.policy import Decision, PolicyStepError, Proposal
 from yggdrisil.serialize import dumps
 from yggdrisil.types import EvaluationRecord, StateNode
 
@@ -58,6 +58,16 @@ class Navigator(Protocol):
     async def plan(self, context: NavigatorContext) -> NavigationPlan: ...
 
 
+class ExplorationRequestSelector(Protocol[State, Action]):
+    """Select exploration requests directly from durable search state."""
+
+    def select(
+        self,
+        graph: ReadOnlyStateGraph[State, Action],
+        status: RunStatus,
+    ) -> list[ExplorationRequest]: ...
+
+
 class Explorer(Protocol[State, Action]):
     async def explore(
         self, context: ExplorerContext[State]
@@ -69,7 +79,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
 
     def __init__(
         self,
-        navigator: Navigator,
+        navigator: Navigator | None,
         explorer: Explorer[State, Action],
         *,
         goal: str | None = None,
@@ -77,7 +87,10 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         lineage_depth: int = 8,
         recent: int = 12,
         max_frontier: int = 100,
+        request_selector: ExplorationRequestSelector[State, Action] | None = None,
     ) -> None:
+        if navigator is None and request_selector is None:
+            raise ValueError("navigator is required when request_selector is not set")
         self.navigator = navigator
         self.explorer = explorer
         self.goal = goal
@@ -85,25 +98,85 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         self.lineage_depth = lineage_depth
         self.recent = recent
         self.max_frontier = max_frontier
+        self.request_selector = request_selector
+        self._interrupted_decisions: list[Decision[Action]] = []
+
+    def drain_interrupted_decisions(self) -> list[Decision[Action]]:
+        """Return and clear decisions staged before policy-task cancellation."""
+        decisions = self._interrupted_decisions
+        self._interrupted_decisions = []
+        return decisions
 
     async def step(
         self,
         graph: ReadOnlyStateGraph[State, Action],
         status: RunStatus,
     ) -> list[Decision[Action]]:
+        self._interrupted_decisions = []
         navigator_context = self._navigator_context(graph, status)
-        plan = await self.navigator.plan(navigator_context)
-        requests = plan.requests[: self.max_requests]
+        if self.request_selector is None:
+            if self.navigator is None:  # guarded in __init__; narrows the type
+                raise RuntimeError("navigator is not configured")
+            selection_component: object = self.navigator
+            input_context: Any = _input_context(
+                self.navigator,
+                navigator_context,
+                format_navigator_prompt,
+            )
+            request_source = "navigator"
+            try:
+                plan = await self.navigator.plan(navigator_context)
+            except asyncio.CancelledError as exc:
+                self._interrupted_decisions = [
+                    _failed_decision(
+                        role="navigator",
+                        component=selection_component,
+                        input_context=input_context,
+                        request_source=request_source,
+                        exc=exc,
+                    )
+                ]
+                raise
+            except Exception as exc:
+                decision = _failed_decision(
+                    role="navigator",
+                    component=selection_component,
+                    input_context=input_context,
+                    request_source=request_source,
+                    exc=exc,
+                )
+                raise PolicyStepError(
+                    "navigator failed",
+                    decisions=[decision],
+                    cause=exc,
+                ) from exc
+            requests = plan.requests[: self.max_requests]
+        else:
+            selection_component = self.request_selector
+            input_context = _selector_input_context(status)
+            request_source = "selector"
+            try:
+                selected = self.request_selector.select(graph, status)
+            except Exception as exc:
+                decision = _failed_decision(
+                    role="navigator",
+                    component=selection_component,
+                    input_context=input_context,
+                    request_source=request_source,
+                    exc=exc,
+                )
+                raise PolicyStepError(
+                    "exploration request selector failed",
+                    decisions=[decision],
+                    cause=exc,
+                ) from exc
+            requests = selected[: self.max_requests]
         decisions: list[Decision[Action]] = [
             Decision(
                 role="navigator",
                 selected_state_ids=[request.state_id for request in requests],
-                model=_model_name(self.navigator),
-                input_context=_input_context(
-                    self.navigator,
-                    navigator_context,
-                    format_navigator_prompt,
-                ),
+                model=_model_name(selection_component),
+                input_context=input_context,
                 output={
                     "requests": [
                         {
@@ -113,16 +186,62 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
                         for request in requests
                     ]
                 },
-                tool_calls=list(getattr(self.navigator, "last_trace", ()) or ()),
+                tool_calls=list(getattr(selection_component, "last_trace", ()) or ()),
+                metadata={"request_source": request_source},
+                continue_on_empty=bool(requests) and self.request_selector is not None,
             )
         ]
         if not requests:
             return decisions
         contexts = [self._explorer_context(graph, request) for request in requests]
-        results = await asyncio.gather(
-            *[self.explorer.explore(ctx) for ctx in contexts]
-        )
-        for request, context, result in zip(requests, contexts, results, strict=True):
+        explorer_inputs = [
+            _input_context(self.explorer, context, format_explorer_prompt)
+            for context in contexts
+        ]
+        try:
+            results = await asyncio.gather(
+                *[self.explorer.explore(ctx) for ctx in contexts],
+                return_exceptions=True,
+            )
+        except asyncio.CancelledError as exc:
+            self._interrupted_decisions = decisions + [
+                _failed_decision(
+                    role="explorer",
+                    component=self.explorer,
+                    input_context=input_context,
+                    request_source=None,
+                    exc=exc,
+                    selected_state_ids=[request.state_id],
+                )
+                for request, input_context in zip(
+                    requests,
+                    explorer_inputs,
+                    strict=True,
+                )
+            ]
+            raise
+        failures: list[Exception] = []
+        for request, input_context, result in zip(
+            requests,
+            explorer_inputs,
+            results,
+            strict=True,
+        ):
+            if isinstance(result, BaseException):
+                if not isinstance(result, Exception):
+                    raise result
+                failures.append(result)
+                decisions.append(
+                    _failed_decision(
+                        role="explorer",
+                        component=self.explorer,
+                        input_context=input_context,
+                        request_source=None,
+                        exc=result,
+                        selected_state_ids=[request.state_id],
+                    )
+                )
+                continue
             proposals = [
                 Proposal(parent_id=request.state_id, action=action)
                 for action in result.actions
@@ -134,16 +253,18 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
                     proposals=proposals,
                     selected_state_ids=[request.state_id],
                     model=_model_name(self.explorer),
-                    input_context=_input_context(
-                        self.explorer,
-                        context,
-                        format_explorer_prompt,
-                    ),
+                    input_context=input_context,
                     tool_calls=list(result.trace),
                     output={"actions": list(result.actions), "note": result.note},
                     metadata=metadata,
                 )
             )
+        if failures:
+            raise PolicyStepError(
+                "one or more explorers failed",
+                decisions=decisions,
+                cause=failures[0],
+            ) from failures[0]
         return decisions
 
     def _navigator_context(
@@ -153,7 +274,11 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
     ) -> NavigatorContext:
         recent_nodes = graph.states(limit=self.recent, newest=True)
         summaries: dict[str, str] = {}
-        recent_decisions = graph.decisions(limit=self.recent, newest=True)
+        recent_decisions = graph.decisions(
+            run_id=status.run_id,
+            limit=self.recent,
+            newest=True,
+        )
         for decision in reversed(recent_decisions):
             note = decision.metadata.get("note")
             if isinstance(note, str) and note:
@@ -278,3 +403,43 @@ def _input_context(
     if callable(formatter):
         return formatter(context)
     return fallback(context)
+
+
+def _selector_input_context(status: RunStatus) -> dict[str, Any]:
+    """Small durable snapshot for deterministic request selection."""
+    return {
+        "run_id": status.run_id,
+        "step": status.step,
+        "unique_states": status.unique_states,
+        "edges": status.edges,
+        "elapsed_s": status.elapsed_s,
+    }
+
+
+def _failed_decision(
+    *,
+    role: str,
+    component: object,
+    input_context: Any,
+    request_source: str | None,
+    exc: BaseException,
+    selected_state_ids: list[str] | None = None,
+) -> Decision[Any]:
+    detail = str(exc) or "policy step interrupted"
+    error = f"{type(exc).__name__}: {detail}"
+    metadata: dict[str, Any] = {
+        "attempt_status": "failed",
+        "error_type": type(exc).__name__,
+        "error": detail,
+    }
+    if request_source is not None:
+        metadata["request_source"] = request_source
+    return Decision(
+        role=role,
+        selected_state_ids=selected_state_ids or [],
+        model=_model_name(component),
+        input_context=input_context,
+        tool_calls=list(getattr(component, "last_trace", ()) or ()),
+        output={"error": error},
+        metadata=metadata,
+    )
