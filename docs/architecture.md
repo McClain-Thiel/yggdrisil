@@ -82,8 +82,10 @@ decision with no proposals—for example, a navigator call or a terminal
 explorer result—and it is still recorded.
 
 [`RandomPolicy`][yggdrisil.policies.random.RandomPolicy] samples from a callable
-you provide. [`BestFirstPolicy`][yggdrisil.policies.best_first.BestFirstPolicy]
-takes an explicit priority callable over a node and its evaluations.
+you provide and can filter candidate parents with an optional eligibility
+callback over each node and its evaluations.
+[`BestFirstPolicy`][yggdrisil.policies.best_first.BestFirstPolicy] takes an
+explicit priority callable over a node and its evaluations.
 [`NavigatorExplorerPolicy`][yggdrisil.agents.navigator_explorer.NavigatorExplorerPolicy]
 records navigator and explorer calls separately, with no hidden chat history.
 It can also accept an application-owned
