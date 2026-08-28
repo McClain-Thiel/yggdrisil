@@ -107,6 +107,14 @@ runner checkpoints it and asks the policy for another step. A selector
 returning no requests leaves the flag unset and remains the explicit
 exhausted-search signal. The existing LLM navigator behavior is unchanged.
 
+Explorer exceptions remain fail-fast by default. Applications with independent
+sibling requests may opt into `tolerate_explorer_failures`. Failed explorer
+calls are then stored as decisions with `attempt_status="failed"`, while
+successful sibling proposals continue through normal materialization and
+evaluation. If every selector-driven explorer fails, the durable empty-step
+control asks the selector to schedule another step until it reports exhaustion
+or a run limit is reached.
+
 ## Edges and proposal events
 
 An [`Edge`][yggdrisil.types.Edge] is the canonical domain transition:

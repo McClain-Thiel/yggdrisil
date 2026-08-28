@@ -75,7 +75,12 @@ class Explorer(Protocol[State, Action]):
 
 
 class NavigatorExplorerPolicy(Generic[State, Action]):
-    """Two-role agent policy. Agents are ephemeral; the graph is persistent."""
+    """Two-role agent policy. Agents are ephemeral; the graph is persistent.
+
+    Explorer failures are fail-fast by default. Set
+    ``tolerate_explorer_failures`` to persist failed explorer decisions while
+    still returning successful sibling proposals from the same selection.
+    """
 
     def __init__(
         self,
@@ -88,6 +93,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         recent: int = 12,
         max_frontier: int = 100,
         request_selector: ExplorationRequestSelector[State, Action] | None = None,
+        tolerate_explorer_failures: bool = False,
     ) -> None:
         if navigator is None and request_selector is None:
             raise ValueError("navigator is required when request_selector is not set")
@@ -99,6 +105,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         self.recent = recent
         self.max_frontier = max_frontier
         self.request_selector = request_selector
+        self.tolerate_explorer_failures = tolerate_explorer_failures
         self._interrupted_decisions: list[Decision[Action]] = []
 
     def drain_interrupted_decisions(self) -> list[Decision[Action]]:
@@ -259,7 +266,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
                     metadata=metadata,
                 )
             )
-        if failures:
+        if failures and not self.tolerate_explorer_failures:
             raise PolicyStepError(
                 "one or more explorers failed",
                 decisions=decisions,

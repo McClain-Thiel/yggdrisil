@@ -137,6 +137,26 @@ class EmptyThenActionExplorer:
         )
 
 
+class FixedRequestSelector:
+    def __init__(self, *state_ids: str) -> None:
+        self.state_ids = state_ids
+        self.calls = 0
+
+    def select(self, graph, status) -> list[ExplorationRequest]:
+        self.calls += 1
+        return [ExplorationRequest(state_id=state_id) for state_id in self.state_ids]
+
+
+class FailFirstExplorer:
+    def __init__(self, failed_state_id: str) -> None:
+        self.failed_state_id = failed_state_id
+
+    async def explore(self, context) -> ExplorerResult[Combine]:
+        if context.state_id == self.failed_state_id:
+            raise RuntimeError("one sibling failed")
+        return ExplorerResult(actions=[Combine("4", "6", "+")])
+
+
 @pytest.mark.asyncio
 async def test_explorer_only_proposes_direct_children(tmp_path: Path) -> None:
     problem = Make24()
@@ -405,6 +425,96 @@ async def test_explorer_failure_persists_selection_and_failed_attempt(
     assert decisions[1].output == {"error": "RuntimeError: provider unavailable"}
     assert graph.proposal_events(run_id="failed-explorer") == []
     assert graph.get_run("failed-explorer").status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_tolerated_explorer_failure_applies_successful_sibling(
+    tmp_path: Path,
+) -> None:
+    problem = Make24()
+    graph = SQLiteStateGraph(tmp_path / "partial-explorer-failure.sqlite")
+    failed_id = problem.state_key(problem.initial_state)
+    graph.add_state(failed_id, problem.initial_state)
+    successful_state = problem.apply(
+        problem.initial_state,
+        Combine("1", "3", "+"),
+    )
+    successful_id = problem.state_key(successful_state)
+    graph.add_state(successful_id, successful_state)
+    selector = FixedRequestSelector(failed_id, successful_id)
+
+    result = await Runner(
+        problem,
+        NavigatorExplorerPolicy(
+            None,
+            FailFirstExplorer(failed_id),
+            max_requests=2,
+            request_selector=selector,
+            tolerate_explorer_failures=True,
+        ),
+        graph,
+        RunLimits(max_steps=1),
+        run_id="partial-explorer-failure",
+        resume=False,
+    ).run()
+
+    assert result.stop_reason == "max_steps"
+    assert graph.edge_count() == 1
+    explorer_decisions = [
+        decision
+        for decision in graph.decisions(result.run_id)
+        if decision.role == "explorer"
+    ]
+    assert len(explorer_decisions) == 2
+    failed = next(
+        decision
+        for decision in explorer_decisions
+        if decision.selected_state_ids == [failed_id]
+    )
+    successful = next(
+        decision
+        for decision in explorer_decisions
+        if decision.selected_state_ids == [successful_id]
+    )
+    assert failed.metadata["attempt_status"] == "failed"
+    assert graph.proposal_events(decision_id=failed.decision_id) == []
+    events = graph.proposal_events(decision_id=successful.decision_id)
+    assert len(events) == 1
+    assert events[0].outcome == "created"
+
+
+@pytest.mark.asyncio
+async def test_all_tolerated_explorer_failures_retry_until_limit(
+    tmp_path: Path,
+) -> None:
+    problem = Make24()
+    graph = SQLiteStateGraph(tmp_path / "all-explorers-fail.sqlite")
+    root_id = problem.state_key(problem.initial_state)
+    selector = FixedRequestSelector(root_id)
+
+    result = await Runner(
+        problem,
+        NavigatorExplorerPolicy(
+            None,
+            FailingExplorer(),
+            request_selector=selector,
+            tolerate_explorer_failures=True,
+        ),
+        graph,
+        RunLimits(max_steps=3),
+        run_id="all-explorers-fail",
+        resume=False,
+    ).run()
+
+    assert result.stop_reason == "max_steps"
+    assert result.step == 3
+    assert selector.calls == 3
+    decisions = graph.decisions(result.run_id)
+    assert len(decisions) == 6
+    failed = [decision for decision in decisions if decision.role == "explorer"]
+    assert len(failed) == 3
+    assert all(decision.metadata["attempt_status"] == "failed" for decision in failed)
+    assert graph.proposal_events(run_id=result.run_id) == []
 
 
 @pytest.mark.asyncio
