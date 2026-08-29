@@ -455,28 +455,90 @@ function renderDecisions(decisions) {
       : decision.role;
     step.textContent = `step ${decision.created_step}`;
     header.append(label, step);
-    const pre = document.createElement("pre");
-    pre.textContent = safeJson({
+    const proposals = events.map((event) => ({
+      parent_id: event.parent_id,
+      action: event.action,
+      metadata: event.metadata,
+      outcome: event.outcome,
+      child_id: event.child_id,
+      edge_id: event.edge_id,
+      error: event.error,
+    }));
+    card.append(header);
+    appendTraceSection(card, "Context", {
       policy: decision.policy,
       selected_state_ids: decision.selected_state_ids,
-      input: decision.input_context,
-      tool_calls: decision.tool_calls,
-      output: decision.output,
-      metadata: decision.metadata,
-      proposals: events.map((event) => ({
-        parent_id: event.parent_id,
-        action: event.action,
-        metadata: event.metadata,
-        outcome: event.outcome,
-        child_id: event.child_id,
-        edge_id: event.edge_id,
-        error: event.error,
-      })),
-    }, 2);
-    card.append(header, pre);
+    });
+    appendTraceSection(card, "Model input", decision.input_context, formatTraceInput);
+    appendTraceSection(card, "Tool trace", decision.tool_calls);
+    appendTraceSection(card, "Model output", decision.output);
+    appendTraceSection(card, "Metadata", decision.metadata);
+    appendTraceSection(card, "Proposal outcomes", proposals);
     return card;
   });
   replaceChildren(el["decision-list"], cards);
+}
+
+function appendTraceSection(parent, label, value, formatter = formatTraceValue) {
+  if (!hasTraceValue(value)) return;
+  const section = document.createElement("section");
+  section.className = "trace-section";
+  const heading = document.createElement("h3");
+  heading.textContent = label;
+  const pre = document.createElement("pre");
+  pre.textContent = formatter(value);
+  section.append(heading, pre);
+  parent.append(section);
+}
+
+function hasTraceValue(value) {
+  if (value == null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function formatTraceInput(value) {
+  if (typeof value !== "string") return formatTraceValue(value);
+  const wholeValue = parseJsonText(value);
+  if (wholeValue !== null) return formatTraceValue(wholeValue);
+  return value.split("\n").map((line) => {
+    const separator = line.indexOf(":");
+    if (separator < 0) return line;
+    const embedded = parseJsonText(line.slice(separator + 1));
+    if (embedded === null) return line;
+    return `${line.slice(0, separator + 1)}\n${formatTraceValue(embedded)}`;
+  }).join("\n");
+}
+
+function formatTraceValue(value) {
+  const expanded = expandJsonStrings(value);
+  return typeof expanded === "string" ? expanded : safeJson(expanded, 2);
+}
+
+function expandJsonStrings(value) {
+  if (typeof value === "string") {
+    const parsed = parseJsonText(value);
+    return parsed === null ? value : expandJsonStrings(displayValue(parsed));
+  }
+  if (Array.isArray(value)) return value.map(expandJsonStrings);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, expandJsonStrings(item)])
+  );
+}
+
+function parseJsonText(value) {
+  const text = value.trim();
+  const structured = (text.startsWith("{") && text.endsWith("}"))
+    || (text.startsWith("[") && text.endsWith("]"));
+  if (!structured) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function renderLinks(edges, selectedNodeId) {

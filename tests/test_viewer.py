@@ -213,6 +213,18 @@ vm.runInContext(source.replace(/\npoll\(\);\s*$/, "\n"), context);
   if (compactLabel !== "deleted_genes: 1,597") {
     throw new Error(`unexpected node label: ${compactLabel}`);
   }
+  const formattedInput = vm.runInContext(`
+    formatTraceInput(
+      'CANDIDATE_PREVIEW: {"candidates":[{"experimental_coverage":"measured",' +
+      '"gene_id":"g1137","has_ko_mapping":true}]}'
+    )
+  `, context);
+  if (!formattedInput.includes('CANDIDATE_PREVIEW:\n{\n  "candidates": [')) {
+    throw new Error(`embedded prompt JSON was not expanded: ${formattedInput}`);
+  }
+  if (formattedInput.includes('\\"gene_id\\"')) {
+    throw new Error(`embedded prompt JSON remained escaped: ${formattedInput}`);
+  }
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;
