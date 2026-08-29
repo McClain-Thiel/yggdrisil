@@ -1,6 +1,9 @@
 "use strict";
 
 const NS = "http://www.w3.org/2000/svg";
+const MIN_ZOOM = 0.01;
+const MAX_ZOOM = 3.5;
+const MAX_FIT_ZOOM = 1.3;
 const state = {
   nodes: new Map(),
   edges: new Map(),
@@ -18,7 +21,7 @@ const state = {
   panY: 38,
   zoom: 1,
   drag: null,
-  fitted: false,
+  autoFit: true,
 };
 
 const el = Object.fromEntries(
@@ -61,7 +64,7 @@ el.graph.addEventListener("pointermove", (event) => {
   if (!state.drag) return;
   state.panX = state.drag.panX + event.clientX - state.drag.x;
   state.panY = state.drag.panY + event.clientY - state.drag.y;
-  state.fitted = false;
+  state.autoFit = false;
   applyTransform();
 });
 
@@ -72,7 +75,7 @@ el.graph.addEventListener("pointerup", (event) => {
 });
 
 window.addEventListener("resize", () => {
-  if (state.nodes.size && state.fitted) fitGraph();
+  if (state.nodes.size && state.autoFit) fitGraph();
 });
 
 function activateTab(name) {
@@ -141,10 +144,10 @@ async function poll() {
     const changed = payload.states.length || payload.edges.length
       || payload.evaluations.length || payload.decisions.length
       || eventsChanged;
-    if (changed || !state.fitted) {
+    if (changed) {
       renderGraph();
       renderInspector();
-      if (!state.fitted && state.nodes.size) fitGraph();
+      if (state.autoFit && state.nodes.size) fitGraph();
     }
     if (payload.pending) delayMs = 10;
     setConnection("live", payload.run?.status || "watching");
@@ -543,10 +546,14 @@ function fitGraph() {
     maxY = Math.max(maxY, position.y + 90);
   });
   const bounds = el["graph-shell"].getBoundingClientRect();
-  state.zoom = clamp(Math.min((bounds.width - 48) / maxX, (bounds.height - 48) / maxY), 0.2, 1.3);
+  state.zoom = clamp(
+    Math.min((bounds.width - 48) / maxX, (bounds.height - 48) / maxY),
+    MIN_ZOOM,
+    MAX_FIT_ZOOM,
+  );
   state.panX = 24;
   state.panY = 24;
-  state.fitted = true;
+  state.autoFit = true;
   applyTransform();
 }
 
@@ -556,12 +563,13 @@ function zoomAt(factor) {
 }
 
 function zoomAround(factor, x, y) {
-  const next = clamp(state.zoom * factor, 0.2, 3.5);
+  const next = clamp(state.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+  if (next === state.zoom) return;
   const ratio = next / state.zoom;
   state.panX = x - (x - state.panX) * ratio;
   state.panY = y - (y - state.panY) * ratio;
   state.zoom = next;
-  state.fitted = false;
+  state.autoFit = false;
   applyTransform();
 }
 

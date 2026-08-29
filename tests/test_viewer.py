@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from importlib.resources import files
 from pathlib import Path
 
+import pytest
 from make24 import Combine, Make24, Pool
 
 from yggdrisil.evaluation import EvaluationResult
@@ -91,6 +94,128 @@ def test_viewer_assets_are_packaged() -> None:
     assert web.joinpath("index.html").is_file()
     assert web.joinpath("viewer.css").is_file()
     assert web.joinpath("viewer.js").is_file()
+
+
+def test_viewer_preserves_manual_zoom_and_fits_wide_graph() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the viewer interaction regression")
+
+    script = Path(str(files("yggdrisil.web").joinpath("viewer.js")))
+    probe = r"""
+const fs = require("node:fs");
+const vm = require("node:vm");
+
+function fakeElement() {
+  return {
+    attributes: {},
+    checked: false,
+    classList: { add() {}, remove() {}, toggle() {} },
+    dataset: {},
+    hidden: false,
+    textContent: "",
+    title: "",
+    value: "",
+    addEventListener() {},
+    append() {},
+    closest() { return null; },
+    getBoundingClientRect() {
+      return { width: 1000, height: 600, left: 0, top: 0 };
+    },
+    replaceChildren() {},
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+  };
+}
+
+const elements = new Map();
+const document = {
+  createElement: fakeElement,
+  createElementNS: fakeElement,
+  getElementById(id) {
+    if (!elements.has(id)) elements.set(id, fakeElement());
+    return elements.get(id);
+  },
+  querySelectorAll() { return []; },
+};
+const payload = {
+  counts: { states: 1, edges: 0 },
+  decisions: [],
+  decision_cursor: 0,
+  edges: [],
+  edge_cursor: 0,
+  evaluations: [{
+    evaluation_id: "evaluation-1",
+    evaluator: "test",
+    evaluator_id: "test-v1",
+    metadata: {},
+    metrics: {},
+    state_id: "root",
+    version: "1",
+  }],
+  evaluation_cursor: 1,
+  graph: "test.sqlite",
+  pending: false,
+  proposal_events: [],
+  run: null,
+  states: [],
+  state_cursor: 1,
+};
+const context = {
+  console,
+  document,
+  fetch: async () => ({ ok: true, json: async () => payload }),
+  URLSearchParams,
+  window: { addEventListener() {}, setTimeout() {} },
+};
+vm.createContext(context);
+const source = fs.readFileSync(process.argv[1], "utf8");
+vm.runInContext(source.replace(/\npoll\(\);\s*$/, "\n"), context);
+
+(async () => {
+  vm.runInContext(`
+    state.nodes.set("root", {
+      created_step: 0,
+      metadata: {},
+      state: { value: 1 },
+      state_id: "root",
+    });
+    fitGraph();
+    zoomAround(1.18, 500, 300);
+  `, context);
+  const manualZoom = vm.runInContext("state.zoom", context);
+  await vm.runInContext("poll()", context);
+  const polledZoom = vm.runInContext("state.zoom", context);
+  if (polledZoom !== manualZoom) {
+    throw new Error(`poll reset manual zoom ${manualZoom} -> ${polledZoom}`);
+  }
+  vm.runInContext(`
+    state.nodes.clear();
+    for (let step = 0; step <= 104; step += 1) {
+      state.nodes.set("node-" + step, {
+        created_step: step,
+        metadata: {},
+        state: { value: step },
+        state_id: "node-" + step,
+      });
+    }
+    fitGraph();
+  `, context);
+  const wideGraphZoom = vm.runInContext("state.zoom", context);
+  if (wideGraphZoom >= 0.2) {
+    throw new Error(`wide graph fit remained cropped at zoom ${wideGraphZoom}`);
+  }
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+"""
+    completed = subprocess.run(
+        [node, "-e", probe, str(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_graph_reader_pages_initial_graph(tmp_path: Path) -> None:
