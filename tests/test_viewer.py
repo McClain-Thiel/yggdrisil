@@ -96,7 +96,7 @@ def test_viewer_assets_are_packaged() -> None:
     assert web.joinpath("viewer.js").is_file()
 
 
-def test_viewer_preserves_manual_zoom_and_fits_wide_graph() -> None:
+def test_viewer_viewport_and_node_labels() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("Node.js is required for the viewer interaction regression")
@@ -203,6 +203,15 @@ vm.runInContext(source.replace(/\npoll\(\);\s*$/, "\n"), context);
   const wideGraphZoom = vm.runInContext("state.zoom", context);
   if (wideGraphZoom >= 0.2) {
     throw new Error(`wide graph fit remained cropped at zoom ${wideGraphZoom}`);
+  }
+  const compactLabel = vm.runInContext(`
+    nodeSummary({
+      __type__: "example:GenomeState",
+      deleted_genes: { frozenset: Array.from({ length: 1597 }) },
+    })
+  `, context);
+  if (compactLabel !== "deleted_genes: 1,597") {
+    throw new Error(`unexpected node label: ${compactLabel}`);
   }
 })().catch((error) => {
   console.error(error);

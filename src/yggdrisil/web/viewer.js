@@ -4,6 +4,7 @@ const NS = "http://www.w3.org/2000/svg";
 const MIN_ZOOM = 0.01;
 const MAX_ZOOM = 3.5;
 const MAX_FIT_ZOOM = 1.3;
+const NODE_SUMMARY_MAX_CHARS = 22;
 const state = {
   nodes: new Map(),
   edges: new Map(),
@@ -237,6 +238,7 @@ function renderGraph() {
   state.nodes.forEach((node, id) => {
     const position = positions.get(id);
     if (!position) return;
+    const summary = nodeSummary(node.state);
     const classes = ["node", outgoing.get(id) === 0 ? "frontier" : "explored"];
     if (state.selectedKind === "node" && state.selected === id) classes.push("selected");
     if (node.metadata?.best || id === currentBestId()) classes.push("best");
@@ -246,11 +248,14 @@ function renderGraph() {
       transform: `translate(${position.x} ${position.y})`,
       tabindex: "0",
       role: "button",
-      "aria-label": `Inspect state ${id}`,
+      "aria-label": `Inspect state ${id}: ${summary}`,
     });
+    const title = svg("title", {});
+    title.textContent = `${id}\n${summarize(node.state, 500)}`;
+    group.append(title);
     group.append(svg("rect", { x: 0, y: 0, width: 142, height: 54, rx: 3 }));
     group.append(textNode(10, 17, shortId(id), "node-id"));
-    group.append(textNode(10, 34, summarize(node.state), "node-summary"));
+    group.append(textNode(10, 34, summary, "node-summary"));
     const choose = (event) => {
       event.stopPropagation();
       select("node", id);
@@ -596,6 +601,30 @@ function displayValue(value) {
   if (tag === "datetime") return value.iso;
   if (tag === "float") return value.value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, displayValue(item)]));
+}
+
+function nodeSummary(value) {
+  const decoded = displayValue(value);
+  const directCount = collectionSize(decoded);
+  if (directCount !== null) return `${directCount.toLocaleString("en-US")} items`;
+  if (decoded && typeof decoded === "object") {
+    const entries = Object.entries(decoded).filter(([key]) => key !== "__type__");
+    if (entries.length === 1) {
+      const [key, item] = entries[0];
+      const count = collectionSize(item);
+      if (count !== null) return `${key}: ${count.toLocaleString("en-US")}`;
+    }
+  }
+  return summarize(value, NODE_SUMMARY_MAX_CHARS);
+}
+
+function collectionSize(value) {
+  if (Array.isArray(value)) return value.length;
+  if (!value || typeof value !== "object") return null;
+  for (const key of ["frozenset", "set", "values", "items"]) {
+    if (Array.isArray(value[key])) return value[key].length;
+  }
+  return null;
 }
 
 function summarize(value, length = 46) {
