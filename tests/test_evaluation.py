@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from yggdrisil import evaluator_identity
+from yggdrisil import evaluator_cost, evaluator_identity
 from yggdrisil.evaluation import EvaluationResult, EvaluatorSuite, evaluate_cached
 from yggdrisil.graph import SQLiteStateGraph
 
@@ -47,6 +47,66 @@ async def test_evaluator_suite_is_ordered_and_cached(tmp_path: Path) -> None:
         record.evaluation_id for record in first
     ]
     assert graph.evaluations("hello")[0].metrics == {"length": 5}
+
+
+@pytest.mark.asyncio
+async def test_uncached_cost_counts_unique_missing_evaluations(tmp_path: Path) -> None:
+    graph = SQLiteStateGraph[str, str](tmp_path / "graph.sqlite")
+    graph.add_state("hello", "hello")
+    calls: list[str] = []
+
+    class CostlyEvaluator(RecordingEvaluator):
+        cost = 2.5
+
+    default = RecordingEvaluator("default", "1", {}, calls)
+    costly = CostlyEvaluator("costly", "1", {}, calls)
+    suite = EvaluatorSuite([default, costly, costly])
+
+    assert evaluator_cost(default) == 1.0
+    assert suite.uncached_cost(graph, "hello") == 3.5
+
+    await suite.evaluate_cached(graph, "hello")
+
+    assert suite.uncached_cost(graph, "hello") == 0.0
+
+
+@pytest.mark.parametrize(
+    "cost",
+    [True, -1, float("inf"), float("nan"), "bad", 10**400],
+)
+def test_invalid_evaluator_cost_is_rejected(cost: object) -> None:
+    class InvalidCostEvaluator:
+        name = "invalid"
+        version = "1"
+        config = None
+
+        def __init__(self, cost: object) -> None:
+            self.cost = cost
+
+        async def evaluate(self, state: str) -> EvaluationResult:
+            return EvaluationResult(metrics={})
+
+    with pytest.raises(ValueError, match="finite non-negative"):
+        evaluator_cost(InvalidCostEvaluator(cost))
+
+
+def test_uncached_cost_rejects_non_finite_aggregate(tmp_path: Path) -> None:
+    graph = SQLiteStateGraph[str, str](tmp_path / "graph.sqlite")
+    graph.add_state("state", "state")
+    calls: list[str] = []
+
+    class MaximumCostEvaluator(RecordingEvaluator):
+        cost = float.fromhex("0x1.fffffffffffffp+1023")
+
+    suite = EvaluatorSuite(
+        [
+            MaximumCostEvaluator("first", "1", {}, calls),
+            MaximumCostEvaluator("second", "1", {}, calls),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="aggregate evaluator cost"):
+        suite.uncached_cost(graph, "state")
 
 
 @pytest.mark.asyncio

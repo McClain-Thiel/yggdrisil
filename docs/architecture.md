@@ -50,6 +50,12 @@ independent evaluators together while preserving their declared result order.
 `evaluate_cached` avoids recomputing the same evaluator identity for the same
 state.
 
+An evaluator may expose a non-negative scalar `cost`, defaulting to `1.0`.
+This is scheduling metadata rather than part of evaluator identity: changing a
+cost does not invalidate scientific results already in the cache. The runner
+charges only newly persisted records, so cache hits and duplicate evaluator
+identities cost zero.
+
 Evaluation may be explicit, or a suite may be passed to the runner. A runner
 evaluates the initial and restored graph before the first policy call, then
 evaluates each materialized state before the next call. On resume it backfills
@@ -182,9 +188,13 @@ exact continuation after reopening.
 ## Objective and limits
 
 [`RunLimits`][yggdrisil.limits.RunLimits] stop on unique states, policy steps,
-or wall time. [`Objective`][yggdrisil.objective.Objective] is optional scalar
-run logic: it tracks the best state and can stop on a goal. It does not write
-scores into node metadata and is not a substitute for evaluator evidence.
+wall time, or aggregate evaluator cost. Before starting a state's suite, the
+runner requires all missing evaluator costs to fit within
+`max_evaluation_cost`; it never partially starts a suite because of that limit.
+Spent cost is available on `RunStatus` and `RunResult` and is persisted for
+resume. [`Objective`][yggdrisil.objective.Objective] is optional scalar run
+logic: it tracks the best state and can stop on a goal. It does not write scores
+into node metadata and is not a substitute for evaluator evidence.
 
 ## Inspector and export
 

@@ -34,6 +34,7 @@ class PoolSizeEvaluator:
     version: str = "1"
     fail_once_at_size: int | None = None
     name: str = "pool_size"
+    cost: float = 1.0
 
     @property
     def config(self) -> dict[str, int]:
@@ -188,6 +189,161 @@ async def test_runner_wall_time_covers_evaluation(tmp_path: Path) -> None:
 
     assert result.stop_reason == "max_wall_time_s"
     assert not graph.evaluations(problem.state_key(problem.initial_state))
+
+
+@pytest.mark.asyncio
+async def test_runner_stops_at_evaluation_cost_limit(tmp_path: Path) -> None:
+    problem = Make24()
+    path = tmp_path / "g.sqlite"
+    graph = SQLiteStateGraph(path)
+    start_id = problem.state_key(problem.initial_state)
+    evaluator = PoolSizeEvaluator([])
+    policy = ScriptedPolicy(
+        [
+            [
+                Proposal(parent_id=start_id, action=Combine("1", "3", "+")),
+                Proposal(parent_id=start_id, action=Combine("4", "6", "+")),
+            ]
+        ]
+    )
+
+    result = await Runner(
+        problem,
+        policy,
+        graph,
+        RunLimits(max_evaluation_cost=2),
+        evaluators=EvaluatorSuite([evaluator]),
+        run_id="cost_limited",
+    ).run()
+
+    assert result.stop_reason == "max_evaluation_cost"
+    assert result.evaluation_cost == 2
+    assert result.unique_states == 2
+    assert sorted(len(values) for values in evaluator.calls) == [3, 4]
+    assert [event.outcome for event in graph.proposal_events()] == [
+        "created",
+        "skipped_max_evaluation_cost",
+    ]
+    saved = graph.get_run("cost_limited")
+    assert saved.config["max_evaluation_cost"] == 2
+    assert saved.config["evaluators"][0]["cost"] == 1
+    assert saved.metadata["_yggdrisil_evaluation_cost"] == 2
+    manifest = json.loads(path.with_suffix(".run.json").read_text())
+    assert manifest["evaluation_cost"] == 2
+    assert manifest["limits"]["max_evaluation_cost"] == 2
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_start_suite_that_exceeds_budget(
+    tmp_path: Path,
+) -> None:
+    problem = Make24()
+    graph = SQLiteStateGraph(tmp_path / "g.sqlite")
+    evaluator = PoolSizeEvaluator([], cost=2)
+
+    result = await Runner(
+        problem,
+        MustNotRun(),
+        graph,
+        RunLimits(max_evaluation_cost=1),
+        evaluators=EvaluatorSuite([evaluator]),
+    ).run()
+
+    assert result.stop_reason == "max_evaluation_cost"
+    assert result.evaluation_cost == 0
+    assert evaluator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runner_restores_cost_and_does_not_charge_cache_hits(
+    tmp_path: Path,
+) -> None:
+    problem = Make24()
+    path = tmp_path / "g.sqlite"
+    first_graph = SQLiteStateGraph(path)
+    first_evaluator = PoolSizeEvaluator([])
+    first = await Runner(
+        problem,
+        MustNotRun(),
+        first_graph,
+        RunLimits(max_evaluation_cost=1),
+        evaluators=EvaluatorSuite([first_evaluator]),
+        run_id="resumed_cost",
+    ).run()
+    first_graph.close()
+
+    second_graph = SQLiteStateGraph(path)
+    second_evaluator = PoolSizeEvaluator([])
+    second = await Runner(
+        problem,
+        MustNotRun(),
+        second_graph,
+        RunLimits(max_evaluation_cost=1),
+        evaluators=EvaluatorSuite([second_evaluator]),
+        run_id="resumed_cost",
+    ).run()
+
+    assert first.evaluation_cost == 1
+    assert second.evaluation_cost == 1
+    assert second.stop_reason == "max_evaluation_cost"
+    assert first_evaluator.calls == [problem.initial_state.values]
+    assert second_evaluator.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runner_allows_zero_cost_evaluations_at_zero_limit(
+    tmp_path: Path,
+) -> None:
+    problem = Make24()
+    graph = SQLiteStateGraph(tmp_path / "g.sqlite")
+    start_id = problem.state_key(problem.initial_state)
+    evaluator = PoolSizeEvaluator([], cost=0)
+    policy = ScriptedPolicy(
+        [[Proposal(parent_id=start_id, action=Combine("1", "3", "+"))]]
+    )
+
+    result = await Runner(
+        problem,
+        policy,
+        graph,
+        RunLimits(max_steps=1, max_evaluation_cost=0),
+        evaluators=EvaluatorSuite([evaluator]),
+    ).run()
+
+    assert result.stop_reason == "max_steps"
+    assert result.evaluation_cost == 0
+    assert sorted(len(values) for values in evaluator.calls) == [3, 4]
+
+
+@pytest.mark.asyncio
+async def test_runner_tolerates_decimal_roundoff_at_cost_limit(
+    tmp_path: Path,
+) -> None:
+    problem = Make24()
+    graph = SQLiteStateGraph(tmp_path / "g.sqlite")
+    start_id = problem.state_key(problem.initial_state)
+    evaluator = PoolSizeEvaluator([], cost=0.1)
+    policy = ScriptedPolicy(
+        [
+            [
+                Proposal(parent_id=start_id, action=Combine("1", "3", "+")),
+                Proposal(parent_id=start_id, action=Combine("4", "6", "+")),
+            ]
+        ]
+    )
+
+    result = await Runner(
+        problem,
+        policy,
+        graph,
+        RunLimits(max_evaluation_cost=0.3),
+        evaluators=EvaluatorSuite([evaluator]),
+    ).run()
+
+    assert result.stop_reason == "max_evaluation_cost"
+    assert result.unique_states == 3
+    assert result.evaluation_cost == pytest.approx(0.3)
+    assert sorted(len(values) for values in evaluator.calls) == [3, 3, 4]
 
 
 @pytest.mark.asyncio

@@ -51,7 +51,9 @@ interruption, and never overwrites an existing run when `resume=False`.
    `EvaluatorSuite` is an ordered list of evaluators with per-state caching by
    evaluator name, version, and configuration. Pass a suite to `Runner` to
    evaluate every state before policies observe it; opt-in concurrent execution
-   is available for independent evaluators.
+   is available for independent evaluators. Evaluators may declare scalar costs,
+   and `RunLimits(max_evaluation_cost=...)` enforces an aggregate budget while
+   treating cached records as free.
 6. **Objectives are run logic.** An optional scalar `Objective` tracks the best
    state and can stop a run without writing scores into state metadata.
 7. **Policies are replaceable.** Random search, best-first expansion, and

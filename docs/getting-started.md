@@ -109,6 +109,7 @@ class Distance:
     name = "distance"
     version = "1"
     config = {"target": 24}
+    cost = 1.0
 
     async def evaluate(self, state):
         return EvaluationResult(metrics={"distance": problem.distance(state)})
@@ -135,6 +136,23 @@ result = await Runner(
 
 Use `concurrent=True` only when evaluators are independent. Results retain the
 suite's declared order. Evaluation time is covered by `max_wall_time_s`.
+
+An evaluator may declare a non-negative scalar `cost`; the default is one unit.
+The units are application-defined, so they can represent oracle calls, money,
+or a calibrated heuristic. `max_evaluation_cost` stops the runner before a
+state's missing evaluator suite would exceed the budget. Cached records cost
+zero, and a suite starts only when all of its missing evaluations fit:
+
+```python
+result = await Runner(
+    problem,
+    policy,
+    graph,
+    RunLimits(max_evaluation_cost=1_000),
+    evaluators=suite,
+).run()
+print(result.evaluation_cost)
+```
 
 The cache key is `(state_id, evaluator name, version, config)`. Change a version
 or configuration to produce a distinct evaluation record.
@@ -172,6 +190,7 @@ reopening them with the same seed matches an uninterrupted run.
 - `max_states` — unique nodes, including the initial state
 - `max_steps` — policy calls
 - `max_wall_time_s` — wall clock
+- `max_evaluation_cost` — application-defined evaluator cost units
 
 An optional `Objective(score=..., goal_reached=...)` tracks `best_state_id` and
 `best_score` on the run and may stop it. Objective scores are run logic, so they

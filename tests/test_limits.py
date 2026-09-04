@@ -111,6 +111,7 @@ async def test_policy_timeout_error_is_not_mistaken_for_limit(tmp_path: Path) ->
         {"max_states": -1},
         {"max_steps": -1},
         {"max_wall_time_s": -0.1},
+        {"max_evaluation_cost": -0.1},
     ],
 )
 def test_negative_limits_are_rejected(kwargs: dict) -> None:
@@ -121,3 +122,9 @@ def test_negative_limits_are_rejected(kwargs: dict) -> None:
 def test_zero_max_states_is_rejected() -> None:
     with pytest.raises(ValueError, match="max_states must be positive"):
         RunLimits(max_states=0)
+
+
+@pytest.mark.parametrize("value", [True, float("inf"), float("nan")])
+def test_invalid_evaluation_cost_limits_are_rejected(value: float) -> None:
+    with pytest.raises(ValueError, match="finite non-negative"):
+        RunLimits(max_evaluation_cost=value)
