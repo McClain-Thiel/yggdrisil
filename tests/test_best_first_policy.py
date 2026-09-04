@@ -63,6 +63,29 @@ async def test_zero_proposals_returns_empty(tmp_path: Path) -> None:
     assert decisions == []
 
 
+@pytest.mark.asyncio
+async def test_best_first_skips_ineligible_frontier_states(tmp_path: Path) -> None:
+    problem = Make24()
+    graph = SQLiteStateGraph(tmp_path / "eligible.sqlite")
+    blocked = problem.apply(problem.initial_state, Combine("4", "6", "+"))
+    allowed = problem.apply(problem.initial_state, Combine("1", "3", "+"))
+    graph.add_state(problem.state_key(blocked), blocked)
+    allowed_id = problem.state_key(allowed)
+    graph.add_state(allowed_id, allowed)
+
+    policy = BestFirstPolicy(
+        lambda state, rng: problem.legal_actions(state)[:1],
+        lambda node, evaluations: -problem.distance(node.state),
+        eligible=lambda node, evaluations: node.state == allowed,
+    )
+    decisions = await policy.step(
+        graph.readonly(),
+        RunStatus(0, 2, 0, 0, RunLimits(max_steps=1)),
+    )
+
+    assert decisions[0].proposals[0].parent_id == allowed_id
+
+
 def test_invalid_best_first_limits_are_rejected() -> None:
     with pytest.raises(ValueError, match="n_proposals"):
         BestFirstPolicy(

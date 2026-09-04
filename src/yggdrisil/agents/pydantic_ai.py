@@ -50,9 +50,11 @@ class PydanticAINavigator:
         self.agent = agent
         self.model = model
         self.prompt = prompt or format_navigator_prompt
+        self.last_trace: list[dict[str, Any]] = []
 
     async def plan(self, context: NavigatorContext) -> NavigationPlan:
         result = await self.agent.run(self.format_prompt(context))
+        self.last_trace = _trace_from_run(result)
         output = result.output
         if isinstance(output, NavigationPlan):
             return output
@@ -92,13 +94,21 @@ class PydanticAIExplorer(Generic[State, Action]):
         result = await self.agent.run(self.format_prompt(context))
         output = result.output
         if isinstance(output, ExplorerResult):
+            run_trace = _trace_from_run(result)
             if not output.trace:
-                return ExplorerResult(
-                    actions=output.actions,
-                    note=output.note,
-                    trace=_trace_from_run(result),
+                trace = run_trace
+            else:
+                trace = list(output.trace)
+                trace.extend(
+                    entry
+                    for entry in run_trace
+                    if entry.get("role") == "usage" and entry not in trace
                 )
-            return output
+            return ExplorerResult(
+                actions=output.actions,
+                note=output.note,
+                trace=trace,
+            )
         actions = list(output.actions)
         note = getattr(output, "note", None)
         trace = list(getattr(output, "trace", None) or [])
@@ -151,7 +161,7 @@ def make_explorer(
 
 
 def _trace_from_run(result: Any) -> list[dict[str, Any]]:
-    """Best-effort extract of tool calls from a PydanticAI run result."""
+    """Best-effort extract of tool calls and usage from a PydanticAI result."""
     messages = getattr(result, "all_messages", None)
     if callable(messages):
         messages = messages()
@@ -159,10 +169,8 @@ def _trace_from_run(result: Any) -> list[dict[str, Any]]:
         messages = getattr(result, "new_messages", None)
         if callable(messages):
             messages = messages()
-    if not messages:
-        return []
     trace: list[dict[str, Any]] = []
-    for message in messages:
+    for message in messages or ():
         parts = getattr(message, "parts", None) or ()
         for part in parts:
             kind = getattr(part, "part_kind", None) or getattr(part, "kind", "")
@@ -182,4 +190,21 @@ def _trace_from_run(result: Any) -> list[dict[str, Any]]:
                         "content": getattr(part, "content", None),
                     }
                 )
+    usage = getattr(result, "usage", None)
+    if callable(usage):
+        usage = usage()
+    if usage is not None:
+        cost = getattr(usage, "cost", None)
+        trace.append(
+            {
+                "role": "usage",
+                "requests": getattr(usage, "requests", 0),
+                "tool_calls": getattr(usage, "tool_calls", 0),
+                "input_tokens": getattr(usage, "input_tokens", 0),
+                "output_tokens": getattr(usage, "output_tokens", 0),
+                "cache_read_tokens": getattr(usage, "cache_read_tokens", 0),
+                "cache_write_tokens": getattr(usage, "cache_write_tokens", 0),
+                "cost_usd": str(cost) if cost is not None else None,
+            }
+        )
     return trace
