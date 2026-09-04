@@ -111,6 +111,10 @@ class EvaluatorSuite(Generic[State]):
             seen.add(evaluator_id)
             if store.get_evaluation(state_id, evaluator_id) is None:
                 total += evaluator_cost(evaluator)
+                if not math.isfinite(total):
+                    raise ValueError(
+                        "aggregate evaluator cost must be finite and non-negative"
+                    )
         return total
 
 
@@ -162,7 +166,7 @@ def evaluator_cost(evaluator: Evaluator[Any]) -> float:
         raise ValueError("evaluator cost must be a finite non-negative number")
     try:
         cost = float(raw_cost)
-    except (TypeError, ValueError) as exc:
+    except (OverflowError, TypeError, ValueError) as exc:
         raise ValueError("evaluator cost must be a finite non-negative number") from exc
     if not math.isfinite(cost) or cost < 0:
         raise ValueError("evaluator cost must be a finite non-negative number")

@@ -34,7 +34,7 @@ class RunLimits:
         unique_states: int,
         step: int,
         elapsed_s: float,
-        evaluation_cost: float = 0.0,
+        evaluation_cost: float | None = 0.0,
     ) -> str | None:
         if self.max_states is not None and unique_states >= self.max_states:
             return "max_states"
@@ -44,6 +44,7 @@ class RunLimits:
             return "max_wall_time_s"
         if (
             self.max_evaluation_cost is not None
+            and evaluation_cost is not None
             and evaluation_cost >= self.max_evaluation_cost
         ):
             return "max_evaluation_cost"

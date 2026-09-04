@@ -70,7 +70,10 @@ async def test_uncached_cost_counts_unique_missing_evaluations(tmp_path: Path) -
     assert suite.uncached_cost(graph, "hello") == 0.0
 
 
-@pytest.mark.parametrize("cost", [True, -1, float("inf"), float("nan"), "bad"])
+@pytest.mark.parametrize(
+    "cost",
+    [True, -1, float("inf"), float("nan"), "bad", 10**400],
+)
 def test_invalid_evaluator_cost_is_rejected(cost: object) -> None:
     class InvalidCostEvaluator:
         name = "invalid"
@@ -85,6 +88,25 @@ def test_invalid_evaluator_cost_is_rejected(cost: object) -> None:
 
     with pytest.raises(ValueError, match="finite non-negative"):
         evaluator_cost(InvalidCostEvaluator(cost))
+
+
+def test_uncached_cost_rejects_non_finite_aggregate(tmp_path: Path) -> None:
+    graph = SQLiteStateGraph[str, str](tmp_path / "graph.sqlite")
+    graph.add_state("state", "state")
+    calls: list[str] = []
+
+    class MaximumCostEvaluator(RecordingEvaluator):
+        cost = float.fromhex("0x1.fffffffffffffp+1023")
+
+    suite = EvaluatorSuite(
+        [
+            MaximumCostEvaluator("first", "1", {}, calls),
+            MaximumCostEvaluator("second", "1", {}, calls),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="aggregate evaluator cost"):
+        suite.uncached_cost(graph, "state")
 
 
 @pytest.mark.asyncio

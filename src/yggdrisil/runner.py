@@ -91,7 +91,7 @@ class Runner(Generic[State, Action]):
                     unique_states=len(self.graph),
                     step=self._step,
                     elapsed_s=elapsed,
-                    evaluation_cost=self._evaluation_cost,
+                    evaluation_cost=None,
                 )
                 if hit:
                     stop_reason = hit
@@ -113,7 +113,7 @@ class Runner(Generic[State, Action]):
                         unique_states=len(self.graph),
                         step=self._step,
                         elapsed_s=elapsed,
-                        evaluation_cost=self._evaluation_cost,
+                        evaluation_cost=None,
                     )
                     if hit:
                         stop_reason = hit
@@ -434,7 +434,7 @@ class Runner(Generic[State, Action]):
                     unique_states=len(self.graph),
                     step=self._step,
                     elapsed_s=0.0,
-                    evaluation_cost=self._evaluation_cost,
+                    evaluation_cost=None,
                 )
                 if hit is not None:
                     for remaining in events[index:]:
@@ -517,6 +517,8 @@ class Runner(Generic[State, Action]):
             stop_reason = await self._evaluate_state(node.state_id, started)
             if stop_reason is not None:
                 return stop_reason
+        if self._evaluation_budget_exhausted():
+            return "max_evaluation_cost"
         return None
 
     async def _evaluate_state(self, state_id: str, started: float) -> str | None:
@@ -524,9 +526,16 @@ class Runner(Generic[State, Action]):
             return None
         uncached_cost = self.evaluators.uncached_cost(self.graph, state_id)
         cost_limit = self.limits.max_evaluation_cost
+        projected_cost = self._evaluation_cost + uncached_cost
         if (
             cost_limit is not None
-            and self._evaluation_cost + uncached_cost > cost_limit
+            and projected_cost > cost_limit
+            and not math.isclose(
+                projected_cost,
+                cost_limit,
+                rel_tol=0.0,
+                abs_tol=1e-12,
+            )
         ):
             return "max_evaluation_cost"
         remaining = self._remaining_wall_time(time.monotonic() - started)
@@ -550,7 +559,24 @@ class Runner(Generic[State, Action]):
             if consumed_cost > 0:
                 self._evaluation_cost += consumed_cost
                 self._persist("running")
+        if consumed_cost > 0 and self._evaluation_budget_exhausted():
+            return "max_evaluation_cost"
         return None
+
+    def _evaluation_budget_exhausted(self) -> bool:
+        cost_limit = self.limits.max_evaluation_cost
+        if cost_limit is None or self.evaluators is None:
+            return False
+        if not any(
+            evaluator_cost(evaluator) > 0 for evaluator in self.evaluators.evaluators
+        ):
+            return False
+        return self._evaluation_cost >= cost_limit or math.isclose(
+            self._evaluation_cost,
+            cost_limit,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        )
 
     def _skip_events(
         self,
