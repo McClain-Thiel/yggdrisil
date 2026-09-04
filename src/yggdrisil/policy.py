@@ -28,6 +28,28 @@ class Decision(Generic[Action]):
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     output: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    continue_on_empty: bool = False
+
+
+class PolicyStepError(Exception, Generic[Action]):
+    """A policy failure with decisions that must be persisted before raising."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        decisions: list[Decision[Action]],
+        cause: Exception,
+    ) -> None:
+        super().__init__(message)
+        self.decisions = decisions
+        self.cause = cause
+
+
+class InterruptedDecisionProvider(Protocol[Action]):
+    """Supplies staged policy decisions after task cancellation."""
+
+    def drain_interrupted_decisions(self) -> list[Decision[Action]]: ...
 
 
 class Policy(Protocol[Action]):

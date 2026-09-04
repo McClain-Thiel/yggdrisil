@@ -42,6 +42,7 @@ class RunStatus:
     edges: int
     elapsed_s: float
     limits: RunLimits
+    run_id: str | None = None
 
     def with_counts(self, *, unique_states: int, edges: int) -> RunStatus:
         return replace(self, unique_states=unique_states, edges=edges)

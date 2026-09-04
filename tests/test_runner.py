@@ -191,6 +191,56 @@ async def test_runner_wall_time_covers_evaluation(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_interrupted_policy_proposals_are_skipped_before_checkpoint(
+    tmp_path: Path,
+) -> None:
+    problem = Make24()
+    graph = SQLiteStateGraph(tmp_path / "interrupted-policy.sqlite")
+    start_id = problem.state_key(problem.initial_state)
+
+    class InterruptedPolicy:
+        def __init__(self) -> None:
+            self.staged = []
+
+        async def step(self, readonly, status):
+            self.staged = [
+                Decision(
+                    role="policy",
+                    proposals=[
+                        Proposal(
+                            parent_id=start_id,
+                            action=Combine("1", "3", "+"),
+                        )
+                    ],
+                    selected_state_ids=[start_id],
+                )
+            ]
+            await asyncio.sleep(1)
+            return self.staged
+
+        def drain_interrupted_decisions(self):
+            decisions = self.staged
+            self.staged = []
+            return decisions
+
+    result = await Runner(
+        problem,
+        InterruptedPolicy(),
+        graph,
+        RunLimits(max_wall_time_s=0.01),
+        run_id="interrupted-policy",
+        resume=False,
+    ).run()
+
+    assert result.stop_reason == "max_wall_time_s"
+    assert result.step == 1
+    assert graph.edge_count() == 0
+    events = graph.proposal_events(run_id=result.run_id)
+    assert len(events) == 1
+    assert events[0].outcome == "skipped_max_wall_time_s"
+
+
+@pytest.mark.asyncio
 async def test_runner_applies_proposals_and_stops_on_empty(tmp_path: Path) -> None:
     problem = Make24()
     graph = SQLiteStateGraph(tmp_path / "g.sqlite")

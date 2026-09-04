@@ -7,12 +7,13 @@ from typing import Generic, TypeVar
 from yggdrisil.graph.base import ReadOnlyStateGraph
 from yggdrisil.limits import RunStatus
 from yggdrisil.policy import Decision, Proposal
-from yggdrisil.types import StateNode
+from yggdrisil.types import EvaluationRecord, StateNode
 
 State = TypeVar("State")
 Action = TypeVar("Action")
 
 ActionSampler = Callable[[State, random.Random], Sequence[Action]]
+Eligibility = Callable[[StateNode[State], Sequence[EvaluationRecord]], bool]
 
 
 class RandomPolicy(Generic[State, Action]):
@@ -25,12 +26,14 @@ class RandomPolicy(Generic[State, Action]):
         n_proposals: int = 1,
         seed: int | None = None,
         frontier_only: bool = False,
+        eligible: Eligibility[State] | None = None,
     ) -> None:
         if n_proposals < 0:
             raise ValueError("n_proposals must be non-negative")
         self.sample_actions = sample_actions
         self.n_proposals = n_proposals
         self.frontier_only = frontier_only
+        self.eligible = eligible
         self._seed = seed
         self._rng = random.Random(seed)
 
@@ -41,6 +44,12 @@ class RandomPolicy(Generic[State, Action]):
     ) -> list[Decision[Action]]:
         rng = self._rng_for_step(status)
         nodes = graph.frontier() if self.frontier_only else graph.states()
+        if self.eligible is not None:
+            nodes = [
+                node
+                for node in nodes
+                if self.eligible(node, graph.evaluations(node.state_id))
+            ]
         if not nodes:
             return []
         proposals: list[Proposal[Action]] = []

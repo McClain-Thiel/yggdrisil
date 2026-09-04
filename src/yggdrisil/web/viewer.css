@@ -566,6 +566,18 @@ pre {
   overflow: auto;
 }
 
+.trace-section {
+  margin-top: 13px;
+}
+
+.trace-section h3 {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .link-card {
   width: 100%;
   color: inherit;
