@@ -1,5 +1,6 @@
 from yggdrisil.agents.navigator_explorer import (
     ExplorationRequest,
+    ExplorationRequestSelector,
     Explorer,
     ExplorerContext,
     ExplorerResult,
@@ -14,6 +15,7 @@ from yggdrisil.agents.tools import bind_graph_tools
 
 __all__ = [
     "ExplorationRequest",
+    "ExplorationRequestSelector",
     "Explorer",
     "ExplorerContext",
     "ExplorerResult",

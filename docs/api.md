@@ -12,6 +12,10 @@ see [Build a search](tutorial.md).
 
 ::: yggdrisil.policy.Decision
 
+::: yggdrisil.policy.PolicyStepError
+
+::: yggdrisil.policy.InterruptedDecisionProvider
+
 ::: yggdrisil.policy.Policy
 
 ::: yggdrisil.runner.Runner
@@ -90,6 +94,8 @@ see [Build a search](tutorial.md).
 ::: yggdrisil.agents.navigator_explorer.NavigationPlan
 
 ::: yggdrisil.agents.navigator_explorer.ExplorationRequest
+
+::: yggdrisil.agents.navigator_explorer.ExplorationRequestSelector
 
 ::: yggdrisil.agents.navigator_explorer.ExplorerResult
 

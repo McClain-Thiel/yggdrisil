@@ -1,6 +1,10 @@
 "use strict";
 
 const NS = "http://www.w3.org/2000/svg";
+const MIN_ZOOM = 0.01;
+const MAX_ZOOM = 3.5;
+const MAX_FIT_ZOOM = 1.3;
+const NODE_SUMMARY_MAX_CHARS = 22;
 const state = {
   nodes: new Map(),
   edges: new Map(),
@@ -18,7 +22,7 @@ const state = {
   panY: 38,
   zoom: 1,
   drag: null,
-  fitted: false,
+  autoFit: true,
 };
 
 const el = Object.fromEntries(
@@ -61,7 +65,7 @@ el.graph.addEventListener("pointermove", (event) => {
   if (!state.drag) return;
   state.panX = state.drag.panX + event.clientX - state.drag.x;
   state.panY = state.drag.panY + event.clientY - state.drag.y;
-  state.fitted = false;
+  state.autoFit = false;
   applyTransform();
 });
 
@@ -72,7 +76,7 @@ el.graph.addEventListener("pointerup", (event) => {
 });
 
 window.addEventListener("resize", () => {
-  if (state.nodes.size && state.fitted) fitGraph();
+  if (state.nodes.size && state.autoFit) fitGraph();
 });
 
 function activateTab(name) {
@@ -141,10 +145,10 @@ async function poll() {
     const changed = payload.states.length || payload.edges.length
       || payload.evaluations.length || payload.decisions.length
       || eventsChanged;
-    if (changed || !state.fitted) {
+    if (changed) {
       renderGraph();
       renderInspector();
-      if (!state.fitted && state.nodes.size) fitGraph();
+      if (state.autoFit && state.nodes.size) fitGraph();
     }
     if (payload.pending) delayMs = 10;
     setConnection("live", payload.run?.status || "watching");
@@ -234,6 +238,7 @@ function renderGraph() {
   state.nodes.forEach((node, id) => {
     const position = positions.get(id);
     if (!position) return;
+    const summary = nodeSummary(node.state);
     const classes = ["node", outgoing.get(id) === 0 ? "frontier" : "explored"];
     if (state.selectedKind === "node" && state.selected === id) classes.push("selected");
     if (node.metadata?.best || id === currentBestId()) classes.push("best");
@@ -243,11 +248,14 @@ function renderGraph() {
       transform: `translate(${position.x} ${position.y})`,
       tabindex: "0",
       role: "button",
-      "aria-label": `Inspect state ${id}`,
+      "aria-label": `Inspect state ${id}: ${summary}`,
     });
+    const title = svg("title", {});
+    title.textContent = `${id}\n${summarize(node.state, 500)}`;
+    group.append(title);
     group.append(svg("rect", { x: 0, y: 0, width: 142, height: 54, rx: 3 }));
     group.append(textNode(10, 17, shortId(id), "node-id"));
-    group.append(textNode(10, 34, summarize(node.state), "node-summary"));
+    group.append(textNode(10, 34, summary, "node-summary"));
     const choose = (event) => {
       event.stopPropagation();
       select("node", id);
@@ -447,28 +455,90 @@ function renderDecisions(decisions) {
       : decision.role;
     step.textContent = `step ${decision.created_step}`;
     header.append(label, step);
-    const pre = document.createElement("pre");
-    pre.textContent = safeJson({
+    const proposals = events.map((event) => ({
+      parent_id: event.parent_id,
+      action: event.action,
+      metadata: event.metadata,
+      outcome: event.outcome,
+      child_id: event.child_id,
+      edge_id: event.edge_id,
+      error: event.error,
+    }));
+    card.append(header);
+    appendTraceSection(card, "Context", {
       policy: decision.policy,
       selected_state_ids: decision.selected_state_ids,
-      input: decision.input_context,
-      tool_calls: decision.tool_calls,
-      output: decision.output,
-      metadata: decision.metadata,
-      proposals: events.map((event) => ({
-        parent_id: event.parent_id,
-        action: event.action,
-        metadata: event.metadata,
-        outcome: event.outcome,
-        child_id: event.child_id,
-        edge_id: event.edge_id,
-        error: event.error,
-      })),
-    }, 2);
-    card.append(header, pre);
+    });
+    appendTraceSection(card, "Model input", decision.input_context, formatTraceInput);
+    appendTraceSection(card, "Tool trace", decision.tool_calls);
+    appendTraceSection(card, "Model output", decision.output);
+    appendTraceSection(card, "Metadata", decision.metadata);
+    appendTraceSection(card, "Proposal outcomes", proposals);
     return card;
   });
   replaceChildren(el["decision-list"], cards);
+}
+
+function appendTraceSection(parent, label, value, formatter = formatTraceValue) {
+  if (!hasTraceValue(value)) return;
+  const section = document.createElement("section");
+  section.className = "trace-section";
+  const heading = document.createElement("h3");
+  heading.textContent = label;
+  const pre = document.createElement("pre");
+  pre.textContent = formatter(value);
+  section.append(heading, pre);
+  parent.append(section);
+}
+
+function hasTraceValue(value) {
+  if (value == null) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
+}
+
+function formatTraceInput(value) {
+  if (typeof value !== "string") return formatTraceValue(value);
+  const wholeValue = parseJsonText(value);
+  if (wholeValue !== null) return formatTraceValue(wholeValue);
+  return value.split("\n").map((line) => {
+    const separator = line.indexOf(":");
+    if (separator < 0) return line;
+    const embedded = parseJsonText(line.slice(separator + 1));
+    if (embedded === null) return line;
+    return `${line.slice(0, separator + 1)}\n${formatTraceValue(embedded)}`;
+  }).join("\n");
+}
+
+function formatTraceValue(value) {
+  const expanded = expandJsonStrings(value);
+  return typeof expanded === "string" ? expanded : safeJson(expanded, 2);
+}
+
+function expandJsonStrings(value) {
+  if (typeof value === "string") {
+    const parsed = parseJsonText(value);
+    return parsed === null ? value : expandJsonStrings(displayValue(parsed));
+  }
+  if (Array.isArray(value)) return value.map(expandJsonStrings);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, expandJsonStrings(item)])
+  );
+}
+
+function parseJsonText(value) {
+  const text = value.trim();
+  const structured = (text.startsWith("{") && text.endsWith("}"))
+    || (text.startsWith("[") && text.endsWith("]"));
+  if (!structured) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function renderLinks(edges, selectedNodeId) {
@@ -543,10 +613,14 @@ function fitGraph() {
     maxY = Math.max(maxY, position.y + 90);
   });
   const bounds = el["graph-shell"].getBoundingClientRect();
-  state.zoom = clamp(Math.min((bounds.width - 48) / maxX, (bounds.height - 48) / maxY), 0.2, 1.3);
+  state.zoom = clamp(
+    Math.min((bounds.width - 48) / maxX, (bounds.height - 48) / maxY),
+    MIN_ZOOM,
+    MAX_FIT_ZOOM,
+  );
   state.panX = 24;
   state.panY = 24;
-  state.fitted = true;
+  state.autoFit = true;
   applyTransform();
 }
 
@@ -556,12 +630,13 @@ function zoomAt(factor) {
 }
 
 function zoomAround(factor, x, y) {
-  const next = clamp(state.zoom * factor, 0.2, 3.5);
+  const next = clamp(state.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+  if (next === state.zoom) return;
   const ratio = next / state.zoom;
   state.panX = x - (x - state.panX) * ratio;
   state.panY = y - (y - state.panY) * ratio;
   state.zoom = next;
-  state.fitted = false;
+  state.autoFit = false;
   applyTransform();
 }
 
@@ -588,6 +663,30 @@ function displayValue(value) {
   if (tag === "datetime") return value.iso;
   if (tag === "float") return value.value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, displayValue(item)]));
+}
+
+function nodeSummary(value) {
+  const decoded = displayValue(value);
+  const directCount = collectionSize(decoded);
+  if (directCount !== null) return `${directCount.toLocaleString("en-US")} items`;
+  if (decoded && typeof decoded === "object") {
+    const entries = Object.entries(decoded).filter(([key]) => key !== "__type__");
+    if (entries.length === 1) {
+      const [key, item] = entries[0];
+      const count = collectionSize(item);
+      if (count !== null) return `${key}: ${count.toLocaleString("en-US")}`;
+    }
+  }
+  return summarize(value, NODE_SUMMARY_MAX_CHARS);
+}
+
+function collectionSize(value) {
+  if (Array.isArray(value)) return value.length;
+  if (!value || typeof value !== "object") return null;
+  for (const key of ["frozenset", "set", "values", "items"]) {
+    if (Array.isArray(value[key])) return value[key].length;
+  }
+  return null;
 }
 
 function summarize(value, length = 46) {

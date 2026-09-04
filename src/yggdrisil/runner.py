@@ -13,7 +13,7 @@ from yggdrisil.exceptions import GraphError, SerializationError
 from yggdrisil.graph.sqlite import SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
 from yggdrisil.objective import Objective
-from yggdrisil.policy import Decision, Policy, Proposal
+from yggdrisil.policy import Decision, Policy, PolicyStepError, Proposal
 from yggdrisil.problem import Problem
 from yggdrisil.serialize import stable_hash
 from yggdrisil.types import RunRecord, RunResult
@@ -97,12 +97,21 @@ class Runner(Generic[State, Action]):
                     stop_reason = hit
                     break
 
-                decisions = await self._policy_step(elapsed)
+                try:
+                    decisions = await self._policy_step(elapsed)
+                except PolicyStepError as exc:
+                    self._record_decisions(exc.decisions)
+                    raise exc.cause from exc
                 if decisions is None:
                     stop_reason = "max_wall_time_s"
                     break
                 proposal_events = self._record_decisions(decisions)
                 if not proposal_events:
+                    if decisions:
+                        self._step += 1
+                        self._persist("running")
+                    if any(decision.continue_on_empty for decision in decisions):
+                        continue
                     stop_reason = "no_proposals"
                     break
 
@@ -212,8 +221,21 @@ class Runner(Generic[State, Action]):
                 )
         except TimeoutError:
             if timeout.expired():
+                self._checkpoint_interrupted_policy()
                 return None
             raise
+
+    def _checkpoint_interrupted_policy(self) -> None:
+        drain = getattr(self.policy, "drain_interrupted_decisions", None)
+        if not callable(drain):
+            return
+        decisions: list[Decision[Action]] = drain()
+        if not decisions:
+            return
+        proposal_events = self._record_decisions(decisions)
+        self._skip_events(proposal_events, "skipped_max_wall_time_s")
+        self._step += 1
+        self._persist("running")
 
     def _remaining_wall_time(self, elapsed_s: float) -> float | None:
         if self.limits.max_wall_time_s is None:
@@ -312,6 +334,9 @@ class Runner(Generic[State, Action]):
         )
         for local_index, decision in enumerate(decisions):
             decision_index = decision_offset + local_index
+            decision_metadata = dict(decision.metadata)
+            if decision.continue_on_empty:
+                decision_metadata["_yggdrisil_continue_on_empty"] = True
             payload = {
                 "run_id": self.run_id,
                 "created_step": created_step,
@@ -323,7 +348,8 @@ class Runner(Generic[State, Action]):
                 "input_context": decision.input_context,
                 "tool_calls": decision.tool_calls,
                 "output": decision.output,
-                "metadata": decision.metadata,
+                "metadata": decision_metadata,
+                "continue_on_empty": decision.continue_on_empty,
                 "proposals": [
                     {
                         "parent_id": proposal.parent_id,
@@ -344,7 +370,7 @@ class Runner(Generic[State, Action]):
                 input_context=decision.input_context,
                 tool_calls=list(decision.tool_calls),
                 output=decision.output,
-                metadata=dict(decision.metadata),
+                metadata=decision_metadata,
                 created_step=created_step,
             )
             for proposal_index, proposal in enumerate(decision.proposals):
@@ -657,6 +683,7 @@ class Runner(Generic[State, Action]):
             edges=self.graph.edge_count(),
             elapsed_s=elapsed_s,
             limits=self.limits,
+            run_id=self.run_id,
             evaluation_cost=self._evaluation_cost,
         )
 

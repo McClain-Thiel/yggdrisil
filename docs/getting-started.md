@@ -75,6 +75,7 @@ BestFirstPolicy(
     lambda node, evaluations: -problem.distance(node.state),
     n_proposals=2,
     seed=0,
+    eligible=lambda node, evaluations: bool(evaluations),
 )
 
 llm_policy("openai:gpt-4o-mini")

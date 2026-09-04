@@ -14,6 +14,7 @@ Action = TypeVar("Action")
 
 ActionSampler = Callable[[State, random.Random], Sequence[Action]]
 Priority = Callable[[StateNode[State], Sequence[EvaluationRecord]], float]
+Eligibility = Callable[[StateNode[State], Sequence[EvaluationRecord]], bool]
 
 
 class BestFirstPolicy(Generic[State, Action]):
@@ -28,6 +29,7 @@ class BestFirstPolicy(Generic[State, Action]):
         maximize: bool = True,
         seed: int | None = None,
         frontier_limit: int = 1_000,
+        eligible: Eligibility[State] | None = None,
     ) -> None:
         if n_proposals < 0:
             raise ValueError("n_proposals must be non-negative")
@@ -38,6 +40,7 @@ class BestFirstPolicy(Generic[State, Action]):
         self.n_proposals = n_proposals
         self.maximize = maximize
         self.frontier_limit = frontier_limit
+        self.eligible = eligible
         self._seed = seed
         self._rng = random.Random(seed)
 
@@ -50,10 +53,12 @@ class BestFirstPolicy(Generic[State, Action]):
             return []
         rng = self._rng_for_step(status)
         nodes = graph.frontier(limit=self.frontier_limit)
-        scored = [
-            (self.priority(node, graph.evaluations(node.state_id)), node)
-            for node in nodes
-        ]
+        scored = []
+        for node in nodes:
+            evaluations = graph.evaluations(node.state_id)
+            if self.eligible is not None and not self.eligible(node, evaluations):
+                continue
+            scored.append((self.priority(node, evaluations), node))
         scored.sort(
             key=lambda item: (item[0], item[1].state_id),
             reverse=self.maximize,
