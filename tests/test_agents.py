@@ -7,11 +7,12 @@ from make24 import Combine, Make24, tiny_policy
 
 from yggdrisil.agents import (
     ExplorationRequest,
+    ExplorerContext,
     ExplorerResult,
     NavigationPlan,
     NavigatorExplorerPolicy,
 )
-from yggdrisil.agents.pydantic_ai import _trace_from_run
+from yggdrisil.agents.pydantic_ai import PydanticAIExplorer, _trace_from_run
 from yggdrisil.graph import SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
 from yggdrisil.runner import Runner
@@ -102,6 +103,55 @@ def test_pydantic_ai_trace_includes_usage_without_messages() -> None:
             "cache_write_tokens": 5,
             "cost_usd": "0.0012",
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pydantic_ai_explorer_preserves_custom_trace_and_usage() -> None:
+    class Usage:
+        requests = 1
+        cost = 0.001
+
+    class Result:
+        output = ExplorerResult(
+            actions=["action"],
+            trace=[{"role": "tool_call", "tool": "custom"}],
+        )
+
+        def all_messages(self):
+            return []
+
+        def usage(self):
+            return Usage()
+
+    class Agent:
+        async def run(self, prompt: str) -> Result:
+            assert prompt
+            return Result()
+
+    explorer = PydanticAIExplorer[str, str](Agent())
+    result = await explorer.explore(
+        ExplorerContext(
+            goal=None,
+            state_id="state",
+            state="state",
+            lineage=[],
+            guidance=None,
+        )
+    )
+
+    assert result.trace == [
+        {"role": "tool_call", "tool": "custom"},
+        {
+            "role": "usage",
+            "requests": 1,
+            "tool_calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "cost_usd": "0.001",
+        },
     ]
 
 
