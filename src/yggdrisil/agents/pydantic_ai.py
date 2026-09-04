@@ -94,13 +94,21 @@ class PydanticAIExplorer(Generic[State, Action]):
         result = await self.agent.run(self.format_prompt(context))
         output = result.output
         if isinstance(output, ExplorerResult):
+            run_trace = _trace_from_run(result)
             if not output.trace:
-                return ExplorerResult(
-                    actions=output.actions,
-                    note=output.note,
-                    trace=_trace_from_run(result),
+                trace = run_trace
+            else:
+                trace = list(output.trace)
+                trace.extend(
+                    entry
+                    for entry in run_trace
+                    if entry.get("role") == "usage" and entry not in trace
                 )
-            return output
+            return ExplorerResult(
+                actions=output.actions,
+                note=output.note,
+                trace=trace,
+            )
         actions = list(output.actions)
         note = getattr(output, "note", None)
         trace = list(getattr(output, "trace", None) or [])
