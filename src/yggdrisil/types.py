@@ -100,3 +100,4 @@ class RunResult:
     limits: RunLimits
     best_state_id: str | None = None
     best_score: float | None = None
+    evaluation_cost: float = 0.0

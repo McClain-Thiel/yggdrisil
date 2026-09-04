@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
-from yggdrisil.evaluation import EvaluatorSuite
+from yggdrisil.evaluation import EvaluatorSuite, evaluator_cost, evaluator_identity
 from yggdrisil.exceptions import GraphError, SerializationError
 from yggdrisil.graph.sqlite import SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
@@ -19,6 +20,8 @@ from yggdrisil.types import RunRecord, RunResult
 
 State = TypeVar("State")
 Action = TypeVar("Action")
+
+_EVALUATION_COST_METADATA_KEY = "_yggdrisil_evaluation_cost"
 
 
 def _utcnow_id() -> str:
@@ -55,6 +58,7 @@ class Runner(Generic[State, Action]):
         self._best_state_id: str | None = None
         self._best_score: float | None = None
         self._problem_fingerprint: str | None = None
+        self._evaluation_cost = 0.0
 
     async def run(self) -> RunResult:
         started = time.monotonic()
@@ -68,9 +72,9 @@ class Runner(Generic[State, Action]):
         stop_reason = "completed"
 
         try:
-            evaluations_complete = await self._evaluate_existing_states(started)
-            if not evaluations_complete:
-                stop_reason = "max_wall_time_s"
+            evaluation_stop = await self._evaluate_existing_states(started)
+            if evaluation_stop is not None:
+                stop_reason = evaluation_stop
             if restored is not None and stop_reason == "completed":
                 recovered_stop = await self._recover_uncheckpointed_step(
                     goal_found=goal_found,
@@ -87,6 +91,7 @@ class Runner(Generic[State, Action]):
                     unique_states=len(self.graph),
                     step=self._step,
                     elapsed_s=elapsed,
+                    evaluation_cost=self._evaluation_cost,
                 )
                 if hit:
                     stop_reason = hit
@@ -108,6 +113,7 @@ class Runner(Generic[State, Action]):
                         unique_states=len(self.graph),
                         step=self._step,
                         elapsed_s=elapsed,
+                        evaluation_cost=self._evaluation_cost,
                     )
                     if hit:
                         stop_reason = hit
@@ -134,7 +140,7 @@ class Runner(Generic[State, Action]):
                         edge_id=edge_id,
                     )
                     try:
-                        evaluations_complete = await self._evaluate_state(
+                        evaluation_stop = await self._evaluate_state(
                             child_id,
                             started,
                         )
@@ -144,11 +150,11 @@ class Runner(Generic[State, Action]):
                             "skipped_failure",
                         )
                         raise
-                    if not evaluations_complete:
-                        stop_reason = "max_wall_time_s"
+                    if evaluation_stop is not None:
+                        stop_reason = evaluation_stop
                         self._skip_events(
                             proposal_events[index + 1 :],
-                            "skipped_max_wall_time_s",
+                            f"skipped_{evaluation_stop}",
                         )
                         stopped = True
                         break
@@ -182,6 +188,7 @@ class Runner(Generic[State, Action]):
             limits=self.limits,
             best_state_id=self._best_state_id,
             best_score=self._best_score,
+            evaluation_cost=self._evaluation_cost,
         )
         self._persist("completed", extra={"stop_reason": stop_reason})
         self._write_manifest(result)
@@ -240,6 +247,19 @@ class Runner(Generic[State, Action]):
         self.run_id = record.run_id
         self._step = record.step
         stored_metadata = dict(record.metadata)
+        stored_evaluation_cost = stored_metadata.pop(
+            _EVALUATION_COST_METADATA_KEY,
+            0.0,
+        )
+        if isinstance(stored_evaluation_cost, bool):
+            raise GraphError("stored evaluation cost is invalid")
+        try:
+            evaluation_cost = float(stored_evaluation_cost)
+        except (TypeError, ValueError) as exc:
+            raise GraphError("stored evaluation cost is invalid") from exc
+        if not math.isfinite(evaluation_cost) or evaluation_cost < 0:
+            raise GraphError("stored evaluation cost is invalid")
+        self._evaluation_cost = evaluation_cost
         for key in ("best_state_id", "best_score", "stop_reason"):
             stored_metadata.pop(key, None)
         stored_metadata.update(self.metadata)
@@ -414,6 +434,7 @@ class Runner(Generic[State, Action]):
                     unique_states=len(self.graph),
                     step=self._step,
                     elapsed_s=0.0,
+                    evaluation_cost=self._evaluation_cost,
                 )
                 if hit is not None:
                     for remaining in events[index:]:
@@ -454,7 +475,7 @@ class Runner(Generic[State, Action]):
             )
             materialized = True
             try:
-                evaluations_complete = await self._evaluate_state(
+                evaluation_stop = await self._evaluate_state(
                     child_id,
                     started,
                 )
@@ -466,13 +487,13 @@ class Runner(Generic[State, Action]):
                             outcome="skipped_failure",
                         )
                 raise
-            if not evaluations_complete:
-                stop_reason = "max_wall_time_s"
+            if evaluation_stop is not None:
+                stop_reason = evaluation_stop
                 for remaining in events[index + 1 :]:
                     if remaining.outcome == "pending":
                         self.graph.finish_proposal_event(
                             remaining.event_id,
-                            outcome="skipped_max_wall_time_s",
+                            outcome=f"skipped_{evaluation_stop}",
                         )
                 break
             if goal:
@@ -489,32 +510,47 @@ class Runner(Generic[State, Action]):
         self._persist("running")
         return stop_reason
 
-    async def _evaluate_existing_states(self, started: float) -> bool:
+    async def _evaluate_existing_states(self, started: float) -> str | None:
         if self.evaluators is None:
-            return True
+            return None
         for node in self.graph.states():
-            if not await self._evaluate_state(node.state_id, started):
-                return False
-        return True
+            stop_reason = await self._evaluate_state(node.state_id, started)
+            if stop_reason is not None:
+                return stop_reason
+        return None
 
-    async def _evaluate_state(self, state_id: str, started: float) -> bool:
+    async def _evaluate_state(self, state_id: str, started: float) -> str | None:
         if self.evaluators is None:
-            return True
+            return None
+        uncached_cost = self.evaluators.uncached_cost(self.graph, state_id)
+        cost_limit = self.limits.max_evaluation_cost
+        if (
+            cost_limit is not None
+            and self._evaluation_cost + uncached_cost > cost_limit
+        ):
+            return "max_evaluation_cost"
         remaining = self._remaining_wall_time(time.monotonic() - started)
-        if remaining is None:
-            await self.evaluators.evaluate_cached(self.graph, state_id)
-            return True
-        if remaining <= 0:
-            return False
-        timeout = asyncio.timeout(remaining)
+        if remaining is not None and remaining <= 0:
+            return "max_wall_time_s"
         try:
-            async with timeout:
+            if remaining is None:
                 await self.evaluators.evaluate_cached(self.graph, state_id)
-        except TimeoutError:
-            if timeout.expired():
-                return False
-            raise
-        return True
+            else:
+                timeout = asyncio.timeout(remaining)
+                try:
+                    async with timeout:
+                        await self.evaluators.evaluate_cached(self.graph, state_id)
+                except TimeoutError:
+                    if timeout.expired():
+                        return "max_wall_time_s"
+                    raise
+        finally:
+            remaining_cost = self.evaluators.uncached_cost(self.graph, state_id)
+            consumed_cost = uncached_cost - remaining_cost
+            if consumed_cost > 0:
+                self._evaluation_cost += consumed_cost
+                self._persist("running")
+        return None
 
     def _skip_events(
         self,
@@ -595,6 +631,7 @@ class Runner(Generic[State, Action]):
             edges=self.graph.edge_count(),
             elapsed_s=elapsed_s,
             limits=self.limits,
+            evaluation_cost=self._evaluation_cost,
         )
 
     def _persist(self, status: str, extra: dict[str, Any] | None = None) -> None:
@@ -604,6 +641,7 @@ class Runner(Generic[State, Action]):
             metadata["best_score"] = self._best_score
         if extra:
             metadata.update(extra)
+        metadata[_EVALUATION_COST_METADATA_KEY] = self._evaluation_cost
         self.graph.save_run(
             self.run_id,
             step=self._step,
@@ -612,6 +650,8 @@ class Runner(Generic[State, Action]):
                 "max_states": self.limits.max_states,
                 "max_steps": self.limits.max_steps,
                 "max_wall_time_s": self.limits.max_wall_time_s,
+                "max_evaluation_cost": self.limits.max_evaluation_cost,
+                "evaluators": self._evaluator_configs(),
                 "problem_fingerprint": self._problem_fingerprint,
             },
             metadata=metadata,
@@ -634,10 +674,26 @@ class Runner(Generic[State, Action]):
                 "max_states": self.limits.max_states,
                 "max_steps": self.limits.max_steps,
                 "max_wall_time_s": self.limits.max_wall_time_s,
+                "max_evaluation_cost": self.limits.max_evaluation_cost,
             },
+            "evaluation_cost": result.evaluation_cost,
+            "evaluators": self._evaluator_configs(),
         }
         path = Path(self.graph.path).with_suffix(".run.json")
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+    def _evaluator_configs(self) -> list[dict[str, Any]]:
+        if self.evaluators is None:
+            return []
+        return [
+            {
+                "name": evaluator.name,
+                "version": evaluator.version,
+                "evaluator_id": evaluator_identity(evaluator)[0],
+                "cost": evaluator_cost(evaluator),
+            }
+            for evaluator in self.evaluators.evaluators
+        ]
 
 
 def _fingerprint_problem(problem: Problem[Any, Any]) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, Generic, Protocol, TypeVar
@@ -94,6 +95,24 @@ class EvaluatorSuite(Generic[State]):
             records.append(await evaluate_cached(store, state_id, evaluator))
         return records
 
+    def uncached_cost(
+        self,
+        store: EvaluationStore[State],
+        state_id: str,
+    ) -> float:
+        """Return the declared cost of unique evaluations still missing."""
+
+        total = 0.0
+        seen: set[str] = set()
+        for evaluator in self.evaluators:
+            evaluator_id, _ = evaluator_identity(evaluator)
+            if evaluator_id in seen:
+                continue
+            seen.add(evaluator_id)
+            if store.get_evaluation(state_id, evaluator_id) is None:
+                total += evaluator_cost(evaluator)
+        return total
+
 
 async def evaluate_cached(
     store: EvaluationStore[State],
@@ -133,6 +152,21 @@ def evaluator_identity(evaluator: Evaluator[Any]) -> tuple[str, str]:
         }
     )
     return evaluator_id, config_hash
+
+
+def evaluator_cost(evaluator: Evaluator[Any]) -> float:
+    """Return an evaluator's non-negative cost, defaulting to one unit."""
+
+    raw_cost = getattr(evaluator, "cost", 1.0)
+    if isinstance(raw_cost, bool):
+        raise ValueError("evaluator cost must be a finite non-negative number")
+    try:
+        cost = float(raw_cost)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("evaluator cost must be a finite non-negative number") from exc
+    if not math.isfinite(cost) or cost < 0:
+        raise ValueError("evaluator cost must be a finite non-negative number")
+    return cost
 
 
 async def _gather_cancel_on_error(

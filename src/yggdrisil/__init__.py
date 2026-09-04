@@ -6,6 +6,7 @@ from yggdrisil.evaluation import (
     Evaluator,
     EvaluatorSuite,
     evaluate_cached,
+    evaluator_cost,
     evaluator_identity,
 )
 from yggdrisil.exceptions import (
@@ -61,6 +62,7 @@ __all__ = [
     "YggdrisilError",
     "cached_tool",
     "evaluate_cached",
+    "evaluator_cost",
     "evaluator_identity",
     "serializable",
     "stable_hash",
