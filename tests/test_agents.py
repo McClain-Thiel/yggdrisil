@@ -822,3 +822,46 @@ async def test_prompted_output_preserves_plan_and_memory_metadata(role) -> None:
     assert result.output.memory_updates[0].metadata == metadata
     if role == "navigator":
         assert result.output.checkpoint == {"plan": "Use the cited evidence"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["navigator", "explorer"])
+async def test_model_reserves_last_request_for_structured_result(role) -> None:
+    pytest.importorskip("pydantic_ai")
+    import json
+
+    from pydantic_ai import UsageLimits
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from yggdrisil.agents.pydantic_ai import make_explorer, make_navigator
+
+    tool_calls = 0
+
+    def retrieve() -> str:
+        nonlocal tool_calls
+        tool_calls += 1
+        return "Retrieved evidence"
+
+    def respond(messages, info):
+        if info.function_tools:
+            return ModelResponse(parts=[ToolCallPart("retrieve", {})])
+        output = {"requests": [], "checkpoint": {"plan": "Review the evidence"}}
+        if role == "explorer":
+            output = {"actions": [], "note": "Review the evidence"}
+        return ModelResponse(parts=[TextPart(json.dumps(output))])
+
+    model = FunctionModel(respond)
+    kwargs = {
+        "tools": [retrieve],
+        "output_mode": "prompted",
+        "usage_limits": UsageLimits(request_limit=3),
+    }
+    agent = (
+        make_navigator(model, **kwargs)
+        if role == "navigator"
+        else make_explorer(model, str, **kwargs)
+    )
+    result = await agent.agent.run("Retrieve evidence", usage_limits=agent.usage_limits)
+    assert result.usage.requests == 2
+    assert tool_calls == 1

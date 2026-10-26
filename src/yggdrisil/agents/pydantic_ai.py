@@ -90,6 +90,22 @@ def _structured_output(output: Any, mode: Literal["tool", "prompted"]) -> Any:
     raise ValueError(f"unknown structured output mode: {mode}")
 
 
+def _budget_capabilities(limits: UsageLimits | None) -> list[Any]:
+    if limits is None or limits.request_limit is None:
+        return []
+    from pydantic_ai.capabilities import PrepareTools
+
+    request_limit = limits.request_limit
+
+    async def prepare(context: Any, tools: list[Any]) -> list[Any]:
+        # Leave room for the result and one validation retry.
+        if context.usage.requests >= max(0, request_limit - 2):
+            return []
+        return tools
+
+    return [PrepareTools(prepare)]
+
+
 class PydanticAINavigator:
     def __init__(
         self,
@@ -215,6 +231,7 @@ def make_navigator(
         output_type=_structured_output(NavigationPlan, output_mode),
         instructions=instructions or DEFAULT_NAVIGATOR_INSTRUCTIONS,
         tools=[_retryable_tool(tool) for tool in tools],
+        capabilities=_budget_capabilities(usage_limits),
     )
     return PydanticAINavigator(
         agent,
@@ -249,6 +266,7 @@ def make_explorer(
         output_type=_structured_output(Output, output_mode),
         instructions=instructions or DEFAULT_EXPLORER_INSTRUCTIONS,
         tools=[_retryable_tool(tool) for tool in tools],
+        capabilities=_budget_capabilities(usage_limits),
     )
     return PydanticAIExplorer(
         agent,

@@ -14,6 +14,8 @@ class MemoryConflictError(GraphError):
 @serializable
 @dataclass(frozen=True)
 class MemoryUpdate:
+    """Replace a shared document at its current revision; use revision 0 to create it."""
+
     key: str
     content: str
     expected_revision: int = 0
