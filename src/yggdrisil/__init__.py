@@ -18,6 +18,7 @@ from yggdrisil.exceptions import (
 )
 from yggdrisil.graph import ReadOnlyStateGraph, SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
+from yggdrisil.memory import MemoryConflictError, MemoryEntry, MemoryUpdate
 from yggdrisil.objective import Objective
 from yggdrisil.policies import BestFirstPolicy, RandomPolicy
 from yggdrisil.policy import (
@@ -51,6 +52,9 @@ __all__ = [
     "GraphError",
     "InterruptedDecisionProvider",
     "NavigatorExplorerPolicy",
+    "MemoryConflictError",
+    "MemoryEntry",
+    "MemoryUpdate",
     "Objective",
     "Policy",
     "PolicyStepError",

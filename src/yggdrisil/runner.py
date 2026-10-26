@@ -359,6 +359,9 @@ class Runner(Generic[State, Action]):
                     for proposal in decision.proposals
                 ],
             }
+            if decision.memory_updates:
+                payload["memory_updates"] = decision.memory_updates
+                payload["memory_namespace"] = decision.memory_namespace
             decision_id = stable_hash(payload)
             self.graph.add_decision(
                 decision_id,
@@ -372,6 +375,8 @@ class Runner(Generic[State, Action]):
                 output=decision.output,
                 metadata=decision_metadata,
                 created_step=created_step,
+                memory_updates=decision.memory_updates,
+                memory_namespace=decision.memory_namespace,
             )
             for proposal_index, proposal in enumerate(decision.proposals):
                 event_id = stable_hash(

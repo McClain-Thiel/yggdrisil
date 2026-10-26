@@ -47,3 +47,31 @@ def as_toolset(
     graph: ReadOnlyStateGraph[Any, Any],
 ) -> Sequence[Callable[..., str]]:
     return bind_graph_tools(graph)
+
+
+def bind_memory_tools(
+    graph: ReadOnlyStateGraph[Any, Any],
+    namespace: str,
+) -> list[Callable[..., str]]:
+    """Retrieve complete documents omitted from bounded model context."""
+    if not namespace.strip():
+        raise ValueError("memory namespace must be nonempty")
+
+    def list_shared_memory() -> str:
+        """List shared document keys, revisions and content lengths."""
+        return dumps(
+            [
+                {
+                    "key": entry.key,
+                    "revision": entry.revision,
+                    "chars": len(entry.content),
+                }
+                for entry in graph.memories(namespace)
+            ]
+        )
+
+    def read_shared_memory(key: str) -> str:
+        """Read a complete shared document before proposing a revision."""
+        return dumps(graph.memory(namespace, key))
+
+    return [list_shared_memory, read_shared_memory]

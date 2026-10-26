@@ -11,6 +11,7 @@ from yggdrisil.agents.navigator_explorer import (
     format_explorer_prompt,
     format_navigator_prompt,
 )
+from yggdrisil.memory import MemoryUpdate
 
 Action = TypeVar("Action")
 State = TypeVar("State")
@@ -20,6 +21,20 @@ You are the Navigator for a DAG search. Choose which existing states
 deserve the next batch of exploration. Return only state ids that already
 exist. Do not invent states or apply actions yourself.
 """
+
+DEFAULT_MANAGER_INSTRUCTIONS = (
+    DEFAULT_NAVIGATOR_INSTRUCTIONS
+    + """\
+When persistent orchestration is enabled, maintain an application-defined
+checkpoint, distinguish observations from hypotheses, and use worker reports
+and evaluator outcomes to revise it. Shared documents use revision-checked
+memory_updates; the checkpoint is manager-owned working state. Select named
+workers and relevant memory_keys when the application provides them. Request
+continue_on_empty only when a bounded subsequent step has useful work to do.
+Shared document writes become visible on the next policy step, after the
+runner commits them. Workers in the current batch see committed documents.
+"""
+)
 
 DEFAULT_EXPLORER_INSTRUCTIONS = """\
 You are an Explorer for a DAG search. You see one state and may use tools
@@ -68,10 +83,16 @@ class PydanticAINavigator:
                 req
                 if isinstance(req, ExplorationRequest)
                 else ExplorationRequest(
-                    state_id=req.state_id, guidance=getattr(req, "guidance", None)
+                    state_id=req.state_id,
+                    guidance=getattr(req, "guidance", None),
+                    worker=getattr(req, "worker", "explorer"),
+                    memory_keys=list(getattr(req, "memory_keys", [])),
                 )
                 for req in requests
-            ]
+            ],
+            checkpoint=getattr(output, "checkpoint", None),
+            memory_updates=list(getattr(output, "memory_updates", [])),
+            continue_on_empty=getattr(output, "continue_on_empty", False),
         )
 
     def format_prompt(self, context: NavigatorContext) -> str:
@@ -108,12 +129,18 @@ class PydanticAIExplorer(Generic[State, Action]):
                 actions=output.actions,
                 note=output.note,
                 trace=trace,
+                memory_updates=output.memory_updates,
             )
         actions = list(output.actions)
         note = getattr(output, "note", None)
         trace = list(getattr(output, "trace", None) or [])
         trace.extend(_trace_from_run(result))
-        return ExplorerResult(actions=actions, note=note, trace=trace)
+        return ExplorerResult(
+            actions=actions,
+            note=note,
+            trace=trace,
+            memory_updates=list(getattr(output, "memory_updates", [])),
+        )
 
     def format_prompt(self, context: ExplorerContext[State]) -> str:
         return self.prompt(context)
@@ -150,6 +177,7 @@ def make_explorer(
     class Output(BaseModel):
         actions: list[action_type]  # type: ignore[valid-type]
         note: str | None = Field(default=None)
+        memory_updates: list[MemoryUpdate] = Field(default_factory=list)
 
     agent = Agent(
         model,

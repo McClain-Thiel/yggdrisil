@@ -8,6 +8,7 @@ from typing import Any, Generic, TypeVar
 from yggdrisil.evaluation import EvaluationResult
 from yggdrisil.exceptions import CycleError, UnknownStateError
 from yggdrisil.graph.base import StateGraph
+from yggdrisil.memory import MemoryConflictError, MemoryEntry, MemoryUpdate
 from yggdrisil.serialize import dumps, loads, stable_hash
 from yggdrisil.types import (
     DecisionRecord,
@@ -111,6 +112,17 @@ CREATE INDEX IF NOT EXISTS idx_proposal_events_run_step ON proposal_events(run_i
 CREATE INDEX IF NOT EXISTS idx_proposal_events_parent ON proposal_events(parent_id);
 CREATE INDEX IF NOT EXISTS idx_proposal_events_child ON proposal_events(child_id);
 CREATE INDEX IF NOT EXISTS idx_proposal_events_edge ON proposal_events(edge_id);
+
+CREATE TABLE IF NOT EXISTS memory_entries (
+    namespace TEXT NOT NULL,
+    key TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(namespace, key, revision)
+);
 """
 
 
@@ -549,10 +561,19 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
         output: Any,
         metadata: dict[str, Any],
         created_step: int,
+        memory_updates: list[MemoryUpdate] | None = None,
+        memory_namespace: str | None = None,
     ) -> DecisionRecord:
         self.get_run(run_id)
-        self._conn.execute(
-            """
+        existing = self._conn.execute(
+            "SELECT 1 FROM decisions WHERE decision_id = ?", (decision_id,)
+        ).fetchone()
+        if existing is not None:
+            return self.get_decision(decision_id)
+        # A decision and its memory writes must either both commit or both fail.
+        with self._conn:
+            cursor = self._conn.execute(
+                """
             INSERT OR IGNORE INTO decisions (
                 decision_id, run_id, policy, role, model,
                 selected_state_ids_json, input_context_json, tool_calls_json,
@@ -560,23 +581,89 @@ class SQLiteStateGraph(StateGraph[State, Action], Generic[State, Action]):
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (
-                decision_id,
-                run_id,
-                policy,
-                role,
-                model,
-                dumps(selected_state_ids),
-                dumps(input_context),
-                dumps(tool_calls),
-                dumps(output),
-                dumps(metadata),
-                _utcnow(),
-                created_step,
-            ),
-        )
-        self._conn.commit()
+                (
+                    decision_id,
+                    run_id,
+                    policy,
+                    role,
+                    model,
+                    dumps(selected_state_ids),
+                    dumps(input_context),
+                    dumps(tool_calls),
+                    dumps(output),
+                    dumps(metadata),
+                    _utcnow(),
+                    created_step,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return self.get_decision(decision_id)
+            for update in memory_updates or ():
+                namespace = memory_namespace if memory_namespace is not None else run_id
+                if not namespace.strip():
+                    raise ValueError("memory namespace must be nonempty")
+                row = self._conn.execute(
+                    "SELECT MAX(revision) FROM memory_entries "
+                    "WHERE namespace = ? AND key = ?",
+                    (namespace, update.key),
+                ).fetchone()
+                revision = row[0] or 0
+                if revision != update.expected_revision:
+                    raise MemoryConflictError(
+                        f"memory {namespace}/{update.key}: expected revision "
+                        f"{update.expected_revision}, found {revision}"
+                    )
+                self._conn.execute(
+                    "INSERT INTO memory_entries VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        namespace,
+                        update.key,
+                        revision + 1,
+                        update.content,
+                        dumps(update.metadata),
+                        decision_id,
+                        _utcnow(),
+                    ),
+                )
         return self.get_decision(decision_id)
+
+    def memory(self, namespace: str, key: str) -> MemoryEntry:
+        row = self._conn.execute(
+            "SELECT * FROM memory_entries WHERE namespace = ? AND key = ? "
+            "ORDER BY revision DESC LIMIT 1",
+            (namespace, key),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"memory document not found: {namespace}/{key}")
+        return self._row_to_memory(row)
+
+    def memories(self, namespace: str, limit: int | None = None) -> list[MemoryEntry]:
+        sql = (
+            "SELECT m.* FROM memory_entries m JOIN "
+            "(SELECT key, MAX(revision) AS revision FROM memory_entries "
+            "WHERE namespace = ? GROUP BY key) latest "
+            "ON m.key = latest.key AND m.revision = latest.revision "
+            "WHERE m.namespace = ? ORDER BY m.created_at DESC, m.key"
+        )
+        parameters: list[Any] = [namespace, namespace]
+        if limit is not None:
+            if limit < 0:
+                raise ValueError("memory limit must be non-negative")
+            sql += " LIMIT ?"
+            parameters.append(limit)
+        return [self._row_to_memory(row) for row in self._conn.execute(sql, parameters)]
+
+    @staticmethod
+    def _row_to_memory(row: Any) -> MemoryEntry:
+        return MemoryEntry(
+            namespace=row["namespace"],
+            key=row["key"],
+            content=row["content"],
+            revision=row["revision"],
+            metadata=loads(row["metadata_json"]),
+            decision_id=row["decision_id"],
+            created_at=row["created_at"],
+        )
 
     def get_decision(self, decision_id: str) -> DecisionRecord:
         row = self._conn.execute(

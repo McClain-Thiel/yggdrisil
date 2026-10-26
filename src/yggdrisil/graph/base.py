@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar
 
 from yggdrisil.evaluation import EvaluationResult
+from yggdrisil.memory import MemoryEntry
 from yggdrisil.types import (
     DecisionRecord,
     Edge,
@@ -18,6 +19,12 @@ Action = TypeVar("Action")
 
 
 class ReadOnlyStateGraph(Protocol[State, Action]):
+    def memory(self, namespace: str, key: str) -> MemoryEntry: ...
+
+    def memories(
+        self, namespace: str, limit: int | None = None
+    ) -> list[MemoryEntry]: ...
+
     def get_state(self, state_id: str) -> StateNode[State]: ...
 
     def has_state(self, state_id: str) -> bool: ...
@@ -66,6 +73,12 @@ class ReadOnlyStateGraph(Protocol[State, Action]):
 
 
 class StateGraph(ABC, Generic[State, Action]):
+    def memory(self, namespace: str, key: str) -> MemoryEntry:
+        raise NotImplementedError("this graph backend does not support shared memory")
+
+    def memories(self, namespace: str, limit: int | None = None) -> list[MemoryEntry]:
+        raise NotImplementedError("this graph backend does not support shared memory")
+
     @abstractmethod
     def add_state(
         self,
@@ -201,6 +214,12 @@ class ReadOnlyGraph(Generic[State, Action]):
 
     def get_state(self, state_id: str) -> StateNode[State]:
         return self._graph.get_state(state_id)
+
+    def memory(self, namespace: str, key: str) -> MemoryEntry:
+        return self._graph.memory(namespace, key)
+
+    def memories(self, namespace: str, limit: int | None = None) -> list[MemoryEntry]:
+        return self._graph.memories(namespace, limit)
 
     def has_state(self, state_id: str) -> bool:
         return self._graph.has_state(state_id)

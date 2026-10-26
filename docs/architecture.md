@@ -1,5 +1,54 @@
 # Architecture
 
+## Persistent orchestration
+
+`NavigatorExplorerPolicy(..., memory_enabled=True)` adds durable orchestration
+without changing domain-state identity. A manager returns a `NavigationPlan`
+with an application-defined `checkpoint`, exploration requests and optional
+`MemoryUpdate` documents. The runner stores the checkpoint with the manager's
+decision. A new policy instance restores it from the same run after a restart.
+
+Three kinds of information stay separate:
+
+- The search graph and evaluator records describe states and observed outcomes.
+- The manager checkpoint holds current working state, such as a plan or ledger.
+- Shared documents hold reusable knowledge, with keys, revisions and metadata.
+
+The core does not prescribe a scientific ontology or a fixed set of memory
+fields. Applications decide what to remember and can reference larger artifacts
+from document metadata. This follows the distinction between checkpoints and
+knowledge stores in [LangGraph](https://docs.langchain.com/oss/python/langgraph/persistence),
+and between task/progress tracking and delegated work in
+[Magentic-One](https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/magentic-one.html).
+
+Shared documents live in the graph's SQLite database, defaulting to a namespace
+equal to the run ID. Cross-run sharing requires an explicit `memory_namespace`.
+`MemoryUpdate(key, content, expected_revision=0)` creates a document; subsequent
+updates must specify the revision read. Stale writes raise `MemoryConflictError`.
+The decision and all its document updates commit atomically. Replaying a saved
+decision does not write another revision. Older revisions remain in the database.
+Document writes become visible on the next policy step; parallel workers read
+the same committed snapshot. The new manager checkpoint is supplied immediately
+as task guidance, and does not assert that any proposed action has succeeded.
+
+Workers receive isolated copies of the checkpoint and bounded document context.
+`ExplorationRequest.memory_keys` selects relevant documents. Available keys remain
+visible even when document bodies exceed the context budget; `bind_memory_tools`
+provides complete document retrieval. Workers return notes and optional memory
+updates; they never apply state transitions. The next manager context includes
+worker reports and the runner's recorded proposal outcomes and evaluations.
+
+Pass a mapping of names to explorers to dispatch different worker roles via
+`ExplorationRequest.worker`. A research-only turn can return no proposals and
+set `NavigationPlan.continue_on_empty=True`; configure step/time limits to bound
+these turns. Named workers share the same direct-transition contract. Memory
+does not imply durable external API submission or exactly-once side effects;
+applications must persist external task IDs before retrying such work.
+
+Memory is opt-in. Existing deterministic selectors and graph backends remain
+usable without memory support, and stored domain-state/evaluation keys do not
+change.
+
 The core separates domain state, evaluator evidence, and policy provenance.
 That distinction is the main invariant; the implementation is five small
 record types over SQLite rather than a workflow engine.
