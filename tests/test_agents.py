@@ -865,3 +865,63 @@ async def test_model_reserves_last_request_for_structured_result(role) -> None:
     result = await agent.agent.run("Retrieve evidence", usage_limits=agent.usage_limits)
     assert result.usage.requests == 2
     assert tool_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_manager_memory_and_queued_work_survive_restart(tmp_path) -> None:
+    from yggdrisil import MemoryUpdate
+
+    problem = Make24()
+    root = problem.state_key(problem.initial_state)
+    path = tmp_path / "queued.sqlite"
+
+    class Manager:
+        def __init__(self, resumed=False):
+            self.resumed = resumed
+
+        async def plan(self, context):
+            assert not self.resumed, "queued work must not call the manager again"
+            return NavigationPlan(
+                [ExplorationRequest(root, memory_keys=["source"])],
+                checkpoint={"next_step": "Use the committed source"},
+                memory_updates=[MemoryUpdate("source", "Retrieved evidence")],
+            )
+
+    class Worker:
+        async def explore(self, context):
+            assert context.memory[0].content == "Retrieved evidence"
+            assert context.memory[0].revision == 1
+            assert context.checkpoint == {"next_step": "Use the committed source"}
+            return ExplorerResult([Combine("1", "3", "+")])
+
+    def policy(resumed=False):
+        return NavigatorExplorerPolicy(
+            Manager(resumed),
+            Worker(),
+            memory_enabled=True,
+            commit_memory_before_exploration=True,
+        )
+
+    with SQLiteStateGraph(path) as graph:
+        first = await Runner(
+            problem,
+            policy(),
+            graph,
+            RunLimits(max_steps=1),
+            run_id="queued",
+            resume=False,
+        ).run()
+        assert first.unique_states == 1
+        assert graph.memory("queued", "source").revision == 1
+        assert len(graph.decisions("queued")) == 1
+
+    with SQLiteStateGraph(path) as graph:
+        result = await Runner(
+            problem, policy(True), graph, RunLimits(max_steps=2), run_id="queued"
+        ).run()
+        assert result.unique_states == 2
+        decisions = graph.decisions("queued")
+        assert decisions[1].metadata["request_source"] == "pending"
+        assert decisions[1].model is None and decisions[1].tool_calls == []
+        assert decisions[-1].role == "explorer"
+        assert graph.memory("queued", "source").revision == 1
