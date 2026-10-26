@@ -349,7 +349,10 @@ async def test_runner_tolerates_decimal_roundoff_at_cost_limit(
 @pytest.mark.asyncio
 async def test_interrupted_policy_proposals_are_skipped_before_checkpoint(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Exercise cancellation independently of filesystem startup on busy CI hosts.
+    monkeypatch.setattr(Runner, "_remaining_wall_time", lambda self, elapsed_s: 0.01)
     problem = Make24()
     graph = SQLiteStateGraph(tmp_path / "interrupted-policy.sqlite")
     start_id = problem.state_key(problem.initial_state)
@@ -383,7 +386,7 @@ async def test_interrupted_policy_proposals_are_skipped_before_checkpoint(
         problem,
         InterruptedPolicy(),
         graph,
-        RunLimits(max_wall_time_s=0.01),
+        RunLimits(max_steps=1),
         run_id="interrupted-policy",
         resume=False,
     ).run()

@@ -5,6 +5,7 @@ from typing import Any, Generic, Protocol, TypeVar
 
 from yggdrisil.graph.base import ReadOnlyStateGraph
 from yggdrisil.limits import RunStatus
+from yggdrisil.memory import MemoryUpdate
 
 Action = TypeVar("Action")
 
@@ -29,6 +30,8 @@ class Decision(Generic[Action]):
     output: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
     continue_on_empty: bool = False
+    memory_updates: list[MemoryUpdate] = field(default_factory=list)
+    memory_namespace: str | None = None
 
 
 class PolicyStepError(Exception, Generic[Action]):
