@@ -13,7 +13,11 @@ from yggdrisil.agents import (
     NavigationPlan,
     NavigatorExplorerPolicy,
 )
-from yggdrisil.agents.pydantic_ai import PydanticAIExplorer, _trace_from_run
+from yggdrisil.agents.pydantic_ai import (
+    PydanticAIExplorer,
+    PydanticAINavigator,
+    _trace_from_run,
+)
 from yggdrisil.evaluation import EvaluationResult, EvaluatorSuite
 from yggdrisil.graph import SQLiteStateGraph
 from yggdrisil.limits import RunLimits, RunStatus
@@ -238,8 +242,9 @@ async def test_pydantic_ai_explorer_preserves_custom_trace_and_usage() -> None:
             return Usage()
 
     class Agent:
-        async def run(self, prompt: str) -> Result:
+        async def run(self, prompt: str, **kwargs) -> Result:
             assert prompt
+            assert kwargs == {"model_settings": None, "usage_limits": None}
             return Result()
 
     explorer = PydanticAIExplorer[str, str](Agent())
@@ -266,6 +271,49 @@ async def test_pydantic_ai_explorer_preserves_custom_trace_and_usage() -> None:
             "cost_usd": "0.001",
         },
     ]
+
+
+@pytest.mark.parametrize(
+    "adapter_type,method,output",
+    [
+        (PydanticAINavigator, "plan", NavigationPlan([])),
+        (PydanticAIExplorer, "explore", ExplorerResult([])),
+    ],
+)
+async def test_agent_options_are_forwarded_and_failed_calls_do_not_reuse_trace(
+    adapter_type, method, output
+):
+    from types import SimpleNamespace
+
+    settings = {"max_tokens": 100}
+    limits = object()
+
+    class Agent:
+        calls = 0
+
+        async def run(self, prompt, **kwargs):
+            assert prompt == "prompt"
+            assert kwargs == {"model_settings": settings, "usage_limits": limits}
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("provider unavailable")
+            return SimpleNamespace(
+                output=output, usage=SimpleNamespace(requests=1, cost=0.001)
+            )
+
+    adapter = adapter_type(
+        Agent(),
+        prompt=lambda context: "prompt",
+        model_settings=settings,
+        usage_limits=limits,
+    )
+    call = getattr(adapter, method)
+    result = await call(None)
+    trace = adapter.last_trace if method == "plan" else result.trace
+    assert trace[0]["requests"] == 1
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await call(None)
+    assert getattr(adapter, "last_trace", []) == []
 
 
 @pytest.mark.asyncio

@@ -93,7 +93,11 @@ policy = NavigatorExplorerPolicy(lm, lm, goal="Make 24.", max_requests=2)
 ```
 
 The PydanticAI adapter (`pip install "yggdrisil[agents]"`) produces the same
-records with a real model.
+records with a real model. Both `make_navigator` and `make_explorer` accept native
+`model_settings` and `usage_limits`, which are forwarded on each invocation.
+For example, pass `model_settings={"max_tokens": 800}` and
+`usage_limits=UsageLimits(request_limit=6, tool_calls_limit=16)` with
+`UsageLimits` imported from `pydantic_ai`.
 
 ## 5. Materialize proposals
 

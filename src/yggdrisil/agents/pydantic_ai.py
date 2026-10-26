@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
+
+if TYPE_CHECKING:
+    from pydantic_ai import UsageLimits
 
 from yggdrisil.agents.navigator_explorer import (
     ExplorerContext,
@@ -61,14 +64,23 @@ class PydanticAINavigator:
         *,
         model: str | None = None,
         prompt: Callable[[NavigatorContext], str] | None = None,
+        model_settings: dict[str, Any] | None = None,
+        usage_limits: UsageLimits | None = None,
     ) -> None:
         self.agent = agent
         self.model = model
         self.prompt = prompt or format_navigator_prompt
+        self.model_settings = model_settings
+        self.usage_limits = usage_limits
         self.last_trace: list[dict[str, Any]] = []
 
     async def plan(self, context: NavigatorContext) -> NavigationPlan:
-        result = await self.agent.run(self.format_prompt(context))
+        self.last_trace = []
+        result = await self.agent.run(
+            self.format_prompt(context),
+            model_settings=self.model_settings,
+            usage_limits=self.usage_limits,
+        )
         self.last_trace = _trace_from_run(result)
         output = result.output
         if isinstance(output, NavigationPlan):
@@ -106,16 +118,24 @@ class PydanticAIExplorer(Generic[State, Action]):
         *,
         model: str | None = None,
         prompt: Callable[[ExplorerContext[State]], str] | None = None,
+        model_settings: dict[str, Any] | None = None,
+        usage_limits: UsageLimits | None = None,
     ) -> None:
         self.agent = agent
         self.model = model
         self.prompt = prompt or format_explorer_prompt
+        self.model_settings = model_settings
+        self.usage_limits = usage_limits
 
     async def explore(self, context: ExplorerContext[State]) -> ExplorerResult[Action]:
-        result = await self.agent.run(self.format_prompt(context))
+        result = await self.agent.run(
+            self.format_prompt(context),
+            model_settings=self.model_settings,
+            usage_limits=self.usage_limits,
+        )
         output = result.output
+        run_trace = _trace_from_run(result)
         if isinstance(output, ExplorerResult):
-            run_trace = _trace_from_run(result)
             if not output.trace:
                 trace = run_trace
             else:
@@ -134,7 +154,7 @@ class PydanticAIExplorer(Generic[State, Action]):
         actions = list(output.actions)
         note = getattr(output, "note", None)
         trace = list(getattr(output, "trace", None) or [])
-        trace.extend(_trace_from_run(result))
+        trace.extend(run_trace)
         return ExplorerResult(
             actions=actions,
             note=note,
@@ -152,6 +172,8 @@ def make_navigator(
     instructions: str | None = None,
     tools: Sequence[Callable[..., Any]] = (),
     prompt: Callable[[NavigatorContext], str] | None = None,
+    model_settings: dict[str, Any] | None = None,
+    usage_limits: UsageLimits | None = None,
 ) -> PydanticAINavigator:
     Agent = _require_pydantic_ai()
     agent = Agent(
@@ -160,7 +182,13 @@ def make_navigator(
         instructions=instructions or DEFAULT_NAVIGATOR_INSTRUCTIONS,
         tools=list(tools),
     )
-    return PydanticAINavigator(agent, model=model, prompt=prompt)
+    return PydanticAINavigator(
+        agent,
+        model=model,
+        prompt=prompt,
+        model_settings=model_settings,
+        usage_limits=usage_limits,
+    )
 
 
 def make_explorer(
@@ -170,6 +198,8 @@ def make_explorer(
     instructions: str | None = None,
     tools: Sequence[Callable[..., Any]] = (),
     prompt: Callable[[ExplorerContext[Any]], str] | None = None,
+    model_settings: dict[str, Any] | None = None,
+    usage_limits: UsageLimits | None = None,
 ) -> PydanticAIExplorer[Any, Action]:
     Agent = _require_pydantic_ai()
     from pydantic import BaseModel, Field
@@ -185,7 +215,13 @@ def make_explorer(
         instructions=instructions or DEFAULT_EXPLORER_INSTRUCTIONS,
         tools=list(tools),
     )
-    return PydanticAIExplorer(agent, model=model, prompt=prompt)
+    return PydanticAIExplorer(
+        agent,
+        model=model,
+        prompt=prompt,
+        model_settings=model_settings,
+        usage_limits=usage_limits,
+    )
 
 
 def _trace_from_run(result: Any) -> list[dict[str, Any]]:
