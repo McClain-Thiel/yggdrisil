@@ -114,6 +114,7 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         memory_namespace: str | None = None,
         max_memory_entries: int = 20,
         max_memory_chars: int = 16000,
+        commit_memory_before_exploration: bool = False,
     ) -> None:
         if navigator is None and request_selector is None:
             raise ValueError("navigator is required when request_selector is not set")
@@ -131,6 +132,9 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         if memory_namespace is not None and not memory_namespace.strip():
             raise ValueError("memory namespace must be nonempty")
         self.memory_enabled = memory_enabled
+        if commit_memory_before_exploration and not memory_enabled:
+            raise ValueError("committing manager memory first requires memory_enabled")
+        self.commit_memory_before_exploration = commit_memory_before_exploration
         self.memory_namespace = memory_namespace
         self.max_memory_entries = max_memory_entries
         self.max_memory_chars = max_memory_chars
@@ -154,11 +158,28 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         checkpoint = deepcopy(navigator_context.checkpoint)
         memory_updates: list[MemoryUpdate] = []
         continue_on_empty = False
-        if self.request_selector is None:
+        latest = (
+            graph.decisions(status.run_id, limit=1, newest=True)
+            if self.commit_memory_before_exploration
+            else []
+        )
+        pending = (
+            latest[0]
+            if latest and latest[0].metadata.get("_yggdrisil_pending_exploration")
+            else None
+        )
+        if pending is not None:
+            requests = [
+                ExplorationRequest(**item) for item in pending.output["requests"]
+            ]
+            selection_component: object = None
+            input_context: Any = {"manager_decision_id": pending.decision_id}
+            request_source = "pending"
+        elif self.request_selector is None:
             if self.navigator is None:  # guarded in __init__; narrows the type
                 raise RuntimeError("navigator is not configured")
-            selection_component: object = self.navigator
-            input_context: Any = _input_context(
+            selection_component = self.navigator
+            input_context = _input_context(
                 self.navigator,
                 navigator_context,
                 format_navigator_prompt,
@@ -221,6 +242,9 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
                     cause=exc,
                 ) from exc
             requests = selected[: self.max_requests]
+        defer_exploration = bool(
+            self.commit_memory_before_exploration and memory_updates and requests
+        )
         decisions: list[Decision[Action]] = [
             Decision(
                 role="navigator",
@@ -246,14 +270,22 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
                     **({"checkpoint": checkpoint} if self.memory_enabled else {}),
                 },
                 tool_calls=list(getattr(selection_component, "last_trace", ()) or ()),
-                metadata={"request_source": request_source},
+                metadata={
+                    "request_source": request_source,
+                    **(
+                        {"_yggdrisil_pending_exploration": True}
+                        if defer_exploration
+                        else {}
+                    ),
+                },
                 continue_on_empty=continue_on_empty
+                or defer_exploration
                 or (bool(requests) and self.request_selector is not None),
                 memory_updates=memory_updates,
                 memory_namespace=self.memory_namespace,
             )
         ]
-        if not requests:
+        if not requests or defer_exploration:
             return decisions
         contexts = [self._explorer_context(graph, request) for request in requests]
         workers = [self._worker(request.worker) for request in requests]
