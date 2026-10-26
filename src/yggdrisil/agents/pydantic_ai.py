@@ -272,7 +272,9 @@ def _trace_from_run(result: Any) -> list[dict[str, Any]]:
             elif kind in {"tool-return", "tool_return", "retry-prompt", "retry_prompt"}:
                 trace.append(
                     {
-                        "role": "tool_retry" if kind.startswith("retry") else "tool_return",
+                        "role": "tool_retry"
+                        if kind.startswith("retry")
+                        else "tool_return",
                         "tool": getattr(part, "tool_name", None),
                         "content": getattr(part, "content", None),
                     }
