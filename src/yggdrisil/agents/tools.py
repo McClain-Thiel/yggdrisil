@@ -7,6 +7,10 @@ from yggdrisil.graph.base import ReadOnlyStateGraph
 from yggdrisil.serialize import dumps
 
 
+class ToolInputError(ValueError):
+    """An invalid agent argument that can be corrected within the tool budget."""
+
+
 def bind_graph_tools(
     graph: ReadOnlyStateGraph[Any, Any],
 ) -> list[Callable[..., str]]:
@@ -72,6 +76,14 @@ def bind_memory_tools(
 
     def read_shared_memory(key: str) -> str:
         """Read a complete shared document before proposing a revision."""
-        return dumps(graph.memory(namespace, key))
+        try:
+            entry = graph.memory(namespace, key)
+        except KeyError as exc:
+            keys = [entry.key for entry in graph.memories(namespace)]
+            raise ToolInputError(
+                f"Shared document {key!r} does not exist. Available keys: {keys}. "
+                "Save new documents through memory_updates in your final output."
+            ) from exc
+        return dumps(entry)
 
     return [list_shared_memory, read_shared_memory]

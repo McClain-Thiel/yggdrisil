@@ -11,7 +11,7 @@ from yggdrisil.agents.navigator_explorer import (
     format_explorer_prompt,
     format_navigator_prompt,
 )
-from yggdrisil.agents.tools import bind_graph_tools, bind_memory_tools
+from yggdrisil.agents.tools import ToolInputError, bind_graph_tools, bind_memory_tools
 
 __all__ = [
     "ExplorationRequest",
@@ -23,6 +23,7 @@ __all__ = [
     "Navigator",
     "NavigatorContext",
     "NavigatorExplorerPolicy",
+    "ToolInputError",
     "bind_graph_tools",
     "bind_memory_tools",
     "format_explorer_prompt",
