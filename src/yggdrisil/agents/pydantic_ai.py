@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from functools import wraps
 from inspect import iscoroutinefunction
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar
 
 if TYPE_CHECKING:
     from pydantic_ai import UsageLimits
@@ -78,6 +78,16 @@ def _retryable_tool(tool: Callable[..., Any]) -> Callable[..., Any]:
             raise ModelRetry(str(exc)) from exc
 
     return async_call if iscoroutinefunction(tool) else sync_call
+
+
+def _structured_output(output: Any, mode: Literal["tool", "prompted"]) -> Any:
+    if mode == "tool":
+        return output
+    if mode == "prompted":
+        from pydantic_ai import PromptedOutput
+
+        return PromptedOutput(output)
+    raise ValueError(f"unknown structured output mode: {mode}")
 
 
 class PydanticAINavigator:
@@ -197,11 +207,12 @@ def make_navigator(
     prompt: Callable[[NavigatorContext], str] | None = None,
     model_settings: dict[str, Any] | None = None,
     usage_limits: UsageLimits | None = None,
+    output_mode: Literal["tool", "prompted"] = "tool",
 ) -> PydanticAINavigator:
     Agent = _require_pydantic_ai()
     agent = Agent(
         model,
-        output_type=NavigationPlan,
+        output_type=_structured_output(NavigationPlan, output_mode),
         instructions=instructions or DEFAULT_NAVIGATOR_INSTRUCTIONS,
         tools=[_retryable_tool(tool) for tool in tools],
     )
@@ -223,6 +234,7 @@ def make_explorer(
     prompt: Callable[[ExplorerContext[Any]], str] | None = None,
     model_settings: dict[str, Any] | None = None,
     usage_limits: UsageLimits | None = None,
+    output_mode: Literal["tool", "prompted"] = "tool",
 ) -> PydanticAIExplorer[Any, Action]:
     Agent = _require_pydantic_ai()
     from pydantic import BaseModel, Field
@@ -234,7 +246,7 @@ def make_explorer(
 
     agent = Agent(
         model,
-        output_type=Output,
+        output_type=_structured_output(Output, output_mode),
         instructions=instructions or DEFAULT_EXPLORER_INSTRUCTIONS,
         tools=[_retryable_tool(tool) for tool in tools],
     )

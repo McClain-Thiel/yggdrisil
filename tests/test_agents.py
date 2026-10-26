@@ -787,3 +787,38 @@ async def test_retryable_tool_preserves_unexpected_failure() -> None:
 
     with pytest.raises(RuntimeError, match="storage unavailable"):
         await _retryable_tool(unavailable)()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["navigator", "explorer"])
+async def test_prompted_output_preserves_plan_and_memory_metadata(role) -> None:
+    pytest.importorskip("pydantic_ai")
+    import json
+
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from yggdrisil.agents.pydantic_ai import make_explorer, make_navigator
+
+    metadata = {"source_url": "https://example.org/evidence", "gene_ids": ["example"]}
+
+    def respond(messages, info):
+        assert not info.output_tools
+        output = {"requests": [], "checkpoint": {"plan": "Use the cited evidence"}}
+        if role == "explorer":
+            output = {"actions": []}
+        output["memory_updates"] = [
+            {"key": "evidence", "content": "Observed fact", "metadata": metadata}
+        ]
+        return ModelResponse(parts=[TextPart(json.dumps(output))])
+
+    model = FunctionModel(respond)
+    agent = (
+        make_navigator(model, output_mode="prompted")
+        if role == "navigator"
+        else make_explorer(model, str, output_mode="prompted")
+    )
+    result = await agent.agent.run("Save the plan and cited evidence")
+    assert result.output.memory_updates[0].metadata == metadata
+    if role == "navigator":
+        assert result.output.checkpoint == {"plan": "Use the cited evidence"}
