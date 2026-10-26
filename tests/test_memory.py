@@ -194,7 +194,10 @@ async def test_parallel_workers_receive_isolated_checkpoints(tmp_path: Path):
         }
 
 
-async def test_timeout_preserves_manager_checkpoint_and_failure_report(tmp_path: Path):
+async def test_timeout_preserves_manager_checkpoint_and_failure_report(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(Runner, "_remaining_wall_time", lambda self, elapsed_s: 0.01)
     problem = Make24()
     root = problem.state_key(problem.initial_state)
 
@@ -212,7 +215,7 @@ async def test_timeout_preserves_manager_checkpoint_and_failure_report(tmp_path:
     with SQLiteStateGraph(tmp_path / "timeout.sqlite") as graph:
         policy = NavigatorExplorerPolicy(Manager(), SlowWorker(), memory_enabled=True)
         result = await Runner(
-            problem, policy, graph, RunLimits(max_wall_time_s=0.03), run_id="run"
+            problem, policy, graph, RunLimits(max_steps=1), run_id="run"
         ).run()
         assert result.stop_reason == "max_wall_time_s"
         restored = NavigatorExplorerPolicy(Manager(), SlowWorker(), memory_enabled=True)

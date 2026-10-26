@@ -619,7 +619,10 @@ async def test_empty_selected_attempt_continues_to_another_candidate(
 @pytest.mark.asyncio
 async def test_wall_timeout_persists_selection_and_interrupted_explorer(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The timeout under test starts after initial state/evaluator persistence.
+    monkeypatch.setattr(Runner, "_remaining_wall_time", lambda self, elapsed_s: 0.01)
     problem = Make24()
     graph = SQLiteStateGraph(tmp_path / "timed-out-explorer.sqlite")
     root_id = problem.state_key(problem.initial_state)
@@ -633,7 +636,7 @@ async def test_wall_timeout_persists_selection_and_interrupted_explorer(
             request_selector=selector,
         ),
         graph,
-        RunLimits(max_wall_time_s=0.01),
+        RunLimits(max_steps=1),
         evaluators=EvaluatorSuite([PoolViabilityEvaluator()]),
         run_id="timed-out-explorer",
         resume=False,
