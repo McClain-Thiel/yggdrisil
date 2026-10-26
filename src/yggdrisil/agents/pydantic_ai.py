@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from functools import wraps
+from inspect import iscoroutinefunction
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 if TYPE_CHECKING:
@@ -14,6 +16,7 @@ from yggdrisil.agents.navigator_explorer import (
     format_explorer_prompt,
     format_navigator_prompt,
 )
+from yggdrisil.agents.tools import ToolInputError
 from yggdrisil.memory import MemoryUpdate
 
 Action = TypeVar("Action")
@@ -55,6 +58,26 @@ def _require_pydantic_ai() -> Any:
             "Install the agents extra: pip install 'yggdrisil[agents]'"
         ) from exc
     return Agent
+
+
+def _retryable_tool(tool: Callable[..., Any]) -> Callable[..., Any]:
+    from pydantic_ai import ModelRetry
+
+    @wraps(tool)
+    async def async_call(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await tool(*args, **kwargs)
+        except ToolInputError as exc:
+            raise ModelRetry(str(exc)) from exc
+
+    @wraps(tool)
+    def sync_call(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return tool(*args, **kwargs)
+        except ToolInputError as exc:
+            raise ModelRetry(str(exc)) from exc
+
+    return async_call if iscoroutinefunction(tool) else sync_call
 
 
 class PydanticAINavigator:
@@ -180,7 +203,7 @@ def make_navigator(
         model,
         output_type=NavigationPlan,
         instructions=instructions or DEFAULT_NAVIGATOR_INSTRUCTIONS,
-        tools=list(tools),
+        tools=[_retryable_tool(tool) for tool in tools],
     )
     return PydanticAINavigator(
         agent,
@@ -213,7 +236,7 @@ def make_explorer(
         model,
         output_type=Output,
         instructions=instructions or DEFAULT_EXPLORER_INSTRUCTIONS,
-        tools=list(tools),
+        tools=[_retryable_tool(tool) for tool in tools],
     )
     return PydanticAIExplorer(
         agent,
@@ -246,10 +269,12 @@ def _trace_from_run(result: Any) -> list[dict[str, Any]]:
                         "args": getattr(part, "args", None),
                     }
                 )
-            elif kind in {"tool-return", "tool_return"}:
+            elif kind in {"tool-return", "tool_return", "retry-prompt", "retry_prompt"}:
                 trace.append(
                     {
-                        "role": "tool_return",
+                        "role": "tool_retry"
+                        if kind.startswith("retry")
+                        else "tool_return",
                         "tool": getattr(part, "tool_name", None),
                         "content": getattr(part, "content", None),
                     }

@@ -733,3 +733,57 @@ async def test_tiny_lm_plays_with_tools_and_can_hit_24(tmp_path: Path) -> None:
         for step in decision.tool_calls
     }
     assert tools & {"add", "subtract", "multiply", "divide"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["navigator", "explorer"])
+async def test_native_model_corrects_missing_memory_tool_input(tmp_path, role) -> None:
+    pytest.importorskip("pydantic_ai")
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from yggdrisil.agents import bind_memory_tools
+    from yggdrisil.agents.pydantic_ai import make_explorer, make_navigator
+
+    calls = 0
+
+    def respond(messages, info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[ToolCallPart("read_shared_memory", {"key": "invented"})]
+            )
+        assert "does not exist" in str(messages)
+        assert "Available keys: []" in str(messages)
+        output = {"requests": []} if role == "navigator" else {"actions": []}
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, output)])
+
+    with SQLiteStateGraph(tmp_path / "memory.sqlite") as graph:
+        tools = bind_memory_tools(graph.readonly(), "test")
+        model = FunctionModel(respond)
+        agent = (
+            make_navigator(model, tools=tools)
+            if role == "navigator"
+            else make_explorer(model, str, tools=tools)
+        )
+        result = await agent.agent.run("Read the shared document")
+        assert calls == 2
+        trace = _trace_from_run(result)
+        assert any(
+            event.get("tool") == "read_shared_memory"
+            and "does not exist" in str(event.get("content"))
+            for event in trace
+        )
+
+
+@pytest.mark.asyncio
+async def test_retryable_tool_preserves_unexpected_failure() -> None:
+    pytest.importorskip("pydantic_ai")
+    from yggdrisil.agents.pydantic_ai import _retryable_tool
+
+    async def unavailable() -> str:
+        raise RuntimeError("storage unavailable")
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await _retryable_tool(unavailable)()
