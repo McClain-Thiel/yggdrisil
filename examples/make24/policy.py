@@ -134,15 +134,7 @@ class TinyMake24LM:
         return best
 
     def _solved_id(self, context, state_id: str) -> bool:
-        note = context.summaries.get(state_id, "")
-        if note == "solved or terminal":
-            return True
-        for item in context.recent:
-            if item["state_id"] == state_id:
-                meta = item.get("metadata") or {}
-                if meta.get("note") == "solved or terminal":
-                    return True
-        return False
+        return context.summaries.get(state_id) == "solved or terminal"
 
 
 def tiny_policy(

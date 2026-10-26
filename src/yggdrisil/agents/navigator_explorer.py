@@ -260,24 +260,19 @@ class NavigatorExplorerPolicy(Generic[State, Action]):
         if self.memory_enabled:
             namespace = self.memory_namespace or status.run_id
             assert namespace is not None
-            documents = {entry.key: entry for entry in graph.memories(namespace)}
-            visible_documents = dict(documents)
+            visible_documents = {
+                entry.key: entry for entry in graph.memories(namespace)
+            }
+            revisions = {
+                key: entry.revision for key, entry in visible_documents.items()
+            }
             for update in memory_updates:
-                old = documents.get(update.key)
-                revision = old.revision if old else 0
+                revision = revisions.get(update.key, 0)
                 if update.expected_revision != revision:
                     raise MemoryConflictError(
                         f"stale manager memory update: {update.key}"
                     )
-                documents[update.key] = MemoryEntry(
-                    namespace,
-                    update.key,
-                    update.content,
-                    revision + 1,
-                    deepcopy(update.metadata),
-                    "pending",
-                    "",
-                )
+                revisions[update.key] = revision + 1
             for request, context in zip(requests, contexts, strict=True):
                 context.checkpoint.update(deepcopy(checkpoint))
                 worker_documents = (
