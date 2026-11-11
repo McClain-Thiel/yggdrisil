@@ -34,7 +34,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install
-        run: pip install -e ".[agents,dev]"
+        run: pip install -e ".[agents,adk,dev]"
+      - name: Test ADK provider (mocked models)
+        run: pytest tests/test_adk.py
       - name: Lint
         run: ruff check src tests examples
       - name: Format

@@ -28,6 +28,11 @@ agents = [
     "pydantic>=2.10",
     "pydantic-ai>=2.23,<3",
 ]
+adk = [
+    "pydantic>=2.10",
+    "google-adk>=2.13,<2.14",
+    "litellm[mcp]>=1.84,<2",
+]
 dev = [
     "build>=1.2",
     "mypy>=1.13",
