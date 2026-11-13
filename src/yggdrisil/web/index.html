@@ -4,108 +4,61 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <title>Yggdrisil search inspector</title>
+    <title>Yggdrisil search explorer</title>
     <link rel="stylesheet" href="/viewer.css">
   </head>
   <body>
     <header class="masthead">
-      <div class="identity">
-        <span class="wordmark">YGGDRISIL</span>
-        <span class="descriptor">search inspector</span>
-      </div>
-      <dl class="run-stats" aria-label="Run status">
-        <div><dt>Run</dt><dd id="run-id">—</dd></div>
-        <div><dt>Step</dt><dd id="run-step">—</dd></div>
-        <div><dt>States</dt><dd id="state-count">0</dd></div>
-        <div><dt>Edges</dt><dd id="edge-count">0</dd></div>
-      </dl>
-      <div class="connection" id="connection">
-        <span class="connection-dot" aria-hidden="true"></span>
-        <span id="connection-label">connecting</span>
-      </div>
+      <div class="identity"><span class="wordmark">YGGDRISIL</span><span class="descriptor">search explorer</span></div>
+      <div class="run-heading"><strong id="run-id">Loading run…</strong><span id="run-description"></span></div>
+      <div class="connection" id="connection"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">connecting</span><button id="refresh" type="button" aria-label="Refresh run">Refresh</button></div>
     </header>
-
+    <div id="run-error" role="alert" hidden></div>
     <main class="workspace">
       <section class="canvas-panel" aria-label="Search graph">
         <div class="toolbar">
-          <label class="search-field">
-            <span>Find</span>
-            <input id="search" type="search" placeholder="state id, value, note" autocomplete="off">
-          </label>
-          <label class="toggle">
-            <input id="frontier-only" type="checkbox">
-            <span>frontier only</span>
-          </label>
-          <span class="toolbar-rule" aria-hidden="true"></span>
-          <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
-          <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
-          <button id="fit" class="text-button" type="button">Fit</button>
+          <div class="search-wrap">
+            <label class="search-field"><span>Find</span><input id="search" type="search" placeholder="State ID, value, or note" autocomplete="off" aria-controls="search-results"></label>
+            <div id="search-results" class="search-results" aria-label="Search results" hidden></div>
+          </div>
+          <label class="toggle"><input id="frontier-only" type="checkbox"><span>Frontier only</span></label>
+        </div>
+        <div class="viewbar">
+          <div class="view-switch" role="group" aria-label="Graph view">
+            <button id="focus" type="button" aria-pressed="true">Focus selection</button>
+            <button id="lineage" type="button" aria-pressed="false">Lineage</button>
+            <button id="overview" type="button" aria-pressed="false">Overview</button>
+          </div>
+          <div class="zoom-controls"><button id="zoom-out" type="button" aria-label="Zoom out">−</button><button id="zoom-in" type="button" aria-label="Zoom in">+</button><button id="fit" type="button">Fit view</button></div>
         </div>
         <div class="graph-shell" id="graph-shell">
-          <svg id="graph" role="img" aria-label="Directed search graph">
+          <div class="graph-caption"><strong id="view-title">Search neighborhood</strong><span id="view-description" aria-live="polite"></span></div>
+          <svg id="graph" role="group" aria-label="Directed search graph">
             <defs>
-              <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
-                <path d="M0,0 L8,4 L0,8 Z"></path>
-              </marker>
-              <marker id="arrow-selected" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
-                <path d="M0,0 L8,4 L0,8 Z"></path>
-              </marker>
+              <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 Z"></path></marker>
+              <marker id="arrow-selected" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L8,4 L0,8 Z"></path></marker>
             </defs>
-            <g id="viewport">
-              <g id="bands"></g>
-              <g id="edges"></g>
-              <g id="nodes"></g>
-            </g>
+            <g id="viewport"><g id="bands"></g><g id="edges"></g><g id="nodes"></g></g>
           </svg>
-          <div class="empty-state" id="empty-state">
-            <p>Waiting for the first state.</p>
-            <span>The view updates while the search writes to SQLite.</span>
-          </div>
-          <div class="graph-key" aria-label="Graph legend">
-            <span><i class="key-node frontier"></i>frontier · no outgoing edge</span>
-            <span><i class="key-node explored"></i>expanded</span>
-            <span><i class="key-line"></i>selected lineage</span>
-          </div>
+          <div class="empty-state" id="empty-state"><p id="empty-title">Loading the search…</p><span id="empty-description">Reading the saved run.</span></div>
+          <div class="graph-key" aria-label="Graph legend"><span><i class="key-node frontier"></i>Frontier</span><span><i class="key-node explored"></i>Expanded</span><span><i class="key-line"></i>Selected lineage</span></div>
         </div>
       </section>
-
       <aside class="inspector" aria-label="Selection inspector">
-        <div class="inspector-heading">
-          <span class="eyebrow" id="selection-kind">SELECTION</span>
-          <h1 id="selection-title">Choose a node</h1>
-          <p id="selection-subtitle">State, evidence, decisions, and transitions appear here.</p>
-        </div>
+        <div class="inspector-heading"><span class="eyebrow" id="selection-kind">Run overview</span><h1 id="selection-title">Choose a state</h1><p id="selection-subtitle">Select a state to see its results and what changed.</p></div>
         <div class="tabs" role="tablist" aria-label="Inspector views">
-          <button class="tab active" type="button" role="tab" aria-selected="true" data-tab="state">State</button>
-          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="evaluations">Eval <span id="evaluation-count">0</span></button>
-          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="decisions">Trace <span id="decision-count">0</span></button>
-          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="links">Links <span id="link-count">0</span></button>
+          <button id="tab-summary" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="panel-summary" data-tab="summary">Summary</button>
+          <button id="tab-evaluations" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-evaluations" tabindex="-1" data-tab="evaluations">Evaluations <span id="evaluation-count">0</span></button>
+          <button id="tab-decisions" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-decisions" tabindex="-1" data-tab="decisions">Trace <span id="decision-count">0</span></button>
         </div>
-        <div class="inspector-body">
-          <section id="panel-state" class="tab-panel active" role="tabpanel">
-            <div id="selection-facts" class="facts"></div>
-            <h2>Value</h2>
-            <pre id="state-value">No node selected.</pre>
-            <h2>Metadata</h2>
-            <pre id="state-metadata">{}</pre>
-          </section>
-          <section id="panel-evaluations" class="tab-panel" role="tabpanel" hidden>
-            <div id="evaluation-list" class="record-list"></div>
-          </section>
-          <section id="panel-decisions" class="tab-panel" role="tabpanel" hidden>
-            <div id="decision-list" class="record-list"></div>
-          </section>
-          <section id="panel-links" class="tab-panel" role="tabpanel" hidden>
-            <div id="link-list" class="link-list"></div>
-          </section>
+        <div class="inspector-body" id="inspector-body">
+          <section id="panel-summary" class="tab-panel active" role="tabpanel" aria-labelledby="tab-summary"></section>
+          <section id="panel-evaluations" class="tab-panel" role="tabpanel" aria-labelledby="tab-evaluations" hidden></section>
+          <section id="panel-decisions" class="tab-panel" role="tabpanel" aria-labelledby="tab-decisions" hidden></section>
         </div>
       </aside>
     </main>
-
-    <footer class="footer">
-      <span id="graph-path">—</span>
-      <span>drag to pan · scroll to zoom · select an edge to inspect its action</span>
-    </footer>
+    <footer class="footer"><span id="graph-path">—</span><span>Drag to pan · scroll to zoom · Enter to select</span></footer>
     <script src="/viewer.js"></script>
   </body>
 </html>
